@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NightKnight Scale
+GenericName=Game Upscaling Control
+Comment=Launch games through Gamescope with spatial scaling
+Exec=nk-scale
+TryExec=nk-scale
+Icon=nightknight-scale
+Terminal=false
+Categories=Game;
+StartupNotify=true

@@ -1,0 +1,16 @@
+[package]
+name = "nkscale-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nk-scale"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = true }
+nkscale-core = { path = "../nkscale-core" }
+pollster = "0.4"
+shlex = "1.3"

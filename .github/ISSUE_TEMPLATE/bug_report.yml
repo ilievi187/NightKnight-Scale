@@ -1,0 +1,36 @@
+---
+name: Bug report
+about: Report a reproducible problem
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: NKScale and Gamescope versions
+    validations:
+      required: true
+  - type: input
+    id: compositor
+    attributes:
+      label: Compositor, session type, GPU, and driver
+      placeholder: Hyprland / Wayland; GPU and Vulkan driver
+    validations:
+      required: true
+  - type: textarea
+    id: modes
+    attributes:
+      label: Source and output modes
+      description: Include selected display and resolution/refresh rate.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps and observed result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove private or sensitive content before posting.
