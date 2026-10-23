@@ -48,10 +48,13 @@ Observed: Hyprland listed a live Gamescope surface on monitor 3; Gamescope start
 
 Not yet verified: the rendered test-pattern pixels were not visually inspected. The headless output was covered by the dedicated browser window, so the attempted compositor screenshot captured that window rather than Gamescope. The launch passed the `fsr` filter option, but this smoke test is not image-based evidence of FSR output quality or correctness. No performance, latency, GPU-utilization, dropped-frame, or VRAM measurements were made. Do not claim those results.
 
+## Remote CI verification
+
+GitHub Actions run [#40011011470](https://github.com/ilievi187/NightKnight-Scale/actions/runs/40011011470) for commit `315cc5279ae9a79a3aee5c1e70ce62568326247c` completed successfully on `main`. Format, Clippy, and workspace tests all passed. GitHub emitted a non-blocking Node.js 20 deprecation annotation for `actions/checkout@v4`; the job itself succeeded.
+
 ## Remaining M1 gates
 
 - Obtain a clean visual capture of the built-in pattern from the Gamescope surface and compare it with the unscaled reference.
 - Exercise representative source/output mode pairs (720p, 1080p, ultrawide, 4K) where hardware permits.
-- Run repository CI on the pushed commit and record its remote result.
 
 Until those gates pass, M1 remains open and the prototype is not a verified release.

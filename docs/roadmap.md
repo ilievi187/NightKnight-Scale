@@ -12,7 +12,7 @@ This roadmap separates working features from future research. A milestone is not
 - [x] Start the built-in test application via Gamescope FSR on the isolated test display; Gamescope created a WSI swapchain and supervised the child.
 - [ ] Visually capture/inspect the rendered test pattern and compare it with an unscaled reference; the headless output was occluded during the smoke test.
 - [ ] Verify source/output mode matrix where hardware supports it; no performance claims without instrumentation.
-- [ ] CI green on the pushed commit; limitations and repeatable demo procedure reviewed.
+- [x] CI green on the pushed foundation commit; limitations and repeatable demo procedure reviewed.
 
 Completion requires the runtime checks above. The milestone is still in progress until they pass.
 
