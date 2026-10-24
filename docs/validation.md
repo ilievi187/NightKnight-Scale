@@ -6,45 +6,42 @@ validate a native NKScale Vulkan renderer or portal/PipeWire capture.
 
 ## Environment and isolation
 
-Final captures were made on 2026-10-23 UTC with:
+Final captures were made on 2026-10-23 UTC with Gamescope 3.16.31, Hyprland
+0.56.2, and the RADV/Mesa 26.2.5 Vulkan driver. SDL's Wayland video driver was
+explicitly selected before display enumeration. The full GPU model, kernel build,
+Hyprland build identifier, physical connector names/modes, and desktop coordinates
+are intentionally not published.
 
-- Gamescope 3.16.31 (GCC 16.2.1).
-- Hyprland 0.56.2; kernel `7.2.8-9-omarchy`.
-- AMD Radeon RX 7900 XT (`RADV NAVI31`), Mesa `26.2.5-arch1.1`.
-- SDL video driver explicitly set to Wayland before display enumeration.
-
-The physical outputs were HDMI-A-1 3840×2160@60 Hz, DP-1 1920×1080@500 Hz,
-and HDMI-A-2 2560×1080@179.983 Hz. `HEADLESS-1` was occupied by a pre-existing
-window and was left untouched. The test created and used a separate temporary
-Hyprland headless output, `HEADLESS-3`, 1920×1080@60 Hz, scale 1.25, on workspace
-3. Re-enumeration mapped it to SDL display index 4. The SDL/Hyprland mapping and
-complete connector-only output inventory are in `validation/environment.json`;
-monitor model/serial strings are intentionally omitted.
+A pre-existing headless output with a window was left untouched. A separate idle
+headless test output was used at 1920×1080@60 Hz and scale 1.25. Its volatile SDL
+display index is stored only as a run-scoped diagnostic and in the exact Gamescope
+argv; it is not treated as a stable output identity. `validation/environment.json` contains only
+sanitized software-version and output-class metadata—no physical output inventory,
+connector names, coordinates, workspace identifiers, or runtime IDs.
 
 The harness rejects outputs that merely have a `HEADLESS-*` name but expose
-physical make/model/serial/description data. It revalidates output identity,
-geometry, occupancy, physical modes, focus, and the SDL index immediately before
-launch. Gamescope starts without a fullscreen request; only after its mapped
-window is confirmed on the unchanged headless output does the harness apply
-PID-scoped fullscreen. It captures the verified Gamescope foreign toplevel with
-`grim -T` using Hyprland's stable window ID, not the whole output; host compositor
-layers and notifications are excluded. It terminates only the process pinned by
-its pidfd. Focus checkpoints include prelaunch, pre-fullscreen,
-fullscreen transition, pre-capture, and post-cleanup; they confirm `DP-1` and the
-same focused client at those samples. The client address is not persisted and
-continuous input/focus tracing is not claimed. Physical modes were unchanged in
-the ten captured runs. There were 11 run records for
-10 unique matrix cases: the initial 4K target attempt hit the default 8-second
-mapping timeout, then a 20-second retry captured the chart. The failed attempt
-is retained without a screenshot. The temporary output is not automatically
-removed because the harness must never remove an output it did not create.
+physical make/model/serial/description data. Before every launch it revalidates
+the selected headless identity, geometry, occupancy, focus state, physical-mode
+invariant, and current SDL index. Gamescope starts without a fullscreen request;
+only after its mapped window is confirmed on the test output does the harness
+apply PID-scoped fullscreen. It captures the verified Gamescope foreign toplevel
+with `grim -T`; the temporary stable window handle, process PID, output/workspace
+IDs, connector names, and runtime sockets are used only in memory and are not
+persisted. Logs and result metadata are sanitized before writing. Focus checkpoints
+record only whether the original monitor and client remained unchanged; continuous
+input/focus tracing is not claimed. Physical modes were unchanged in all ten
+captured runs. There are 11 historical run records for 10 unique matrix cases: the
+first 4K-target attempt hit the default 8-second mapping timeout and produced no
+capture; the 20-second retry captured the chart. Both attempts used a 1920×1080
+headless host output, and only the retry produced a PNG. Neither run establishes a
+4K capture or target-buffer size. The temporary test output is not automatically removed
+because the harness must never remove an output it did not create.
 
-The real GUI was also launched as a Wayland window on `HEADLESS-3`; Hyprland
-reported class/title `NightKnight Scale`, mapped on monitor 4/workspace 3. The
-focused monitor was `DP-1` at the before/after snapshots, and it was closed by
-targeting only its own PID. The unfocused output snapshot showed the desktop
-background strongly through the window; its cause was not established, so it is
-omitted as GUI visual evidence.
+The GUI placement check likewise used the dedicated headless workspace and a
+per-process window rule. Only its class, logical dimensions, and fullscreen state
+are retained; live monitor names, IDs, PIDs, and focused-client addresses are not.
+The unfocused output snapshot showed the desktop background strongly through the
+window; its cause was not established, so it is omitted as GUI visual evidence.
 
 ## Automated checks
 
@@ -57,15 +54,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 python -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-The Rust format, tests, and Clippy checks passed. The Python headless-harness
-suite passed 23 tests covering physical/occupied-output rejection, authoritative
-headless identity and revalidation, verified Gamescope-toplevel capture identity,
-volatile SDL index mapping, windowed preflight/PID-scoped fullscreen planning,
-pidfd-bound cleanup, focused-client checkpoints, portable result paths, home-path
-redaction, and display-identifier redaction. A release build of
-`nkscale-ui` succeeded; `nk-scale --diagnostics` detected Gamescope, the Vulkan
-adapter, and all current outputs. The capture binary SHA-256 is recorded in each
-run's `result.json` and in `validation/environment.json`.
+The Rust format, tests, and Clippy checks passed; the release build of `nkscale-ui` succeeded. The Python headless-harness suite passed 29 tests covering physical/occupied-output rejection, headless identity and revalidation, verified Gamescope-toplevel capture, SDL-index mapping, preflight/fullscreen planning, pidfd cleanup for standard/custom executable names, focus checkpoints, repository-rooted provenance including untracked files, and diagnostics/JSON/CSV/log/dispatch redaction. `nk-scale --diagnostics` detected Gamescope, a Vulkan adapter, and the available outputs.
+
+The harness records full Git commit/tree provenance and whole-worktree cleanliness from the repository root. Use a scratch `--output-dir` outside the checkout for clean provenance; new output directories written into the checkout make later runs correctly report a dirty worktree. The currently committed matrix captures record a dirty worktree and no source-tree hash, so they are historical visual evidence rather than source-pinned validation. Replace them with a clean rerun before treating the matrix as release evidence.
 
 Remote CI status is tracked on PR #2; use its live checks as the source of truth.
 Each follow-up commit requires a fresh check before merge.

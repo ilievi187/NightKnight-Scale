@@ -5,14 +5,14 @@ native NKScale Vulkan renderer, portal/PipeWire capture, or frame generation.
 
 ## Test isolation
 
-`HEADLESS-1` was occupied by a pre-existing window, so it was left untouched.
-For this run, a temporary Hyprland headless output, `HEADLESS-3`, was created
-through Hyprland IPC and assigned to a dedicated test workspace. The harness
-re-enumerated outputs and matched `HEADLESS-3` to SDL display index 4 immediately
-before every launch. Its reported physical mode was 1920×1080 at 60 Hz; Hyprland
-logical geometry was 1536×864 at scale 1.25.
+An existing headless output with a pre-existing window was left untouched. A
+separate idle Hyprland headless output was used on a dedicated test workspace.
+The harness re-enumerated outputs and mapped the selected headless output to the
+current SDL display index immediately before every launch. Its physical mode was
+1920×1080 at 60 Hz; logical geometry was 1536×864 at scale 1.25. Connector names,
+desktop coordinates, workspace/output IDs, and physical-output modes are omitted.
 
-The harness revalidates the named output's headless identity, geometry, occupancy,
+The harness revalidates the selected output's headless identity, geometry, occupancy,
 and SDL index immediately before launch. It maps Gamescope windowed with a
 per-process monitor/workspace rule and `no_initial_focus`; only after confirming
 the window is on the intended headless output does it request PID-scoped
@@ -46,31 +46,36 @@ python scripts/headless_fsr_validation.py \
   --filter fsr \
   --source 1280x720 \
   --target 1920x1080 \
-  --sharpness 6
+  --sharpness 6 \
+  --output-dir "${TMPDIR:-/tmp}/nkscale-validation-runs"
 ```
 
 The comparison cases use the same command with `--filter linear`, or FSR
 sharpness values `0`, `6`, and `20`. The optional `--disable-lsfgvk` flag sets
 `DISABLE_LSFGVK=1` only for the Gamescope test process and never edits the
 user's LSFG-VK configuration. Each invocation creates a timestamped directory
-under `validation/runs/` with `result.json`, the exact Gamescope argv, logs,
-version/GPU/output metadata, and the captured PNG. The 4K-target replay uses
+under the requested `--output-dir` (default: `validation/runs/`) with `result.json`,
+the exact Gamescope argv, sanitized logs/metadata, and the captured PNG. Use a
+scratch directory outside the checkout for a clean source-provenance record; if
+you write to the checkout, later runs correctly report that the worktree is dirty.
+The 4K-target replay uses
 `--start-timeout 20`; the default 8-second timeout once expired before mapping,
 then the longer retry succeeded. This is a bounded startup allowance, not a
 performance measurement.
 
 ## Captured cases
 
-Ten distinct matrix cases produced valid Gamescope-toplevel captures on
-`HEADLESS-3`; each PNG is 1920×1080, matching the headless host mode. The
+Ten distinct matrix cases produced valid Gamescope-toplevel captures on a
+dedicated headless output; each PNG is 1920×1080, matching the headless host mode. The
 foreign-toplevel capture excludes host compositor overlays. There are 11 run
 records because the initial 4K-target attempt reached the default 8-second mapping
 timeout; a 20-second retry captured the chart. The failed attempt remains in the
-record with no capture. Exact requested dimensions, Gamescope options, selected filter, capture result, window state,
-logs, version/GPU/output metadata, and limitations are in each run's `result.json`
-and `gamescope.log`. Path tokens in the recorded argv use `$REPO` and `$RUN_DIR`
-placeholders; display diagnostics retain connector/mode data but omit monitor
-model/serial strings, and home-directory paths in logs are replaced with `$HOME`.
+record with no capture. Exact requested dimensions, Gamescope options, selected
+filter, capture result, window state, sanitized version/output-class metadata,
+and limitations are in each run's `result.json` and `gamescope.log`. Path tokens
+in the recorded argv use `$REPO` and `$RUN_DIR` placeholders. Logs and diagnostics
+redact physical connector/mode data, coordinates, GPU model, process/runtime IDs,
+and home-directory paths; the selected headless mode and capture dimensions remain.
 
 | Case | Requested source → Gamescope target | Filter |
 |---|---:|---|

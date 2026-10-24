@@ -25,7 +25,7 @@ You can also run the backend directly:
 ```sh
 # Re-enumerate first; never reuse an SDL index after display changes.
 : "${SDL_DISPLAY_INDEX:?Set from fresh nk-scale --diagnostics output}"
-gamescope --backend sdl --display-index "$SDL_DISPLAY_INDEX" \
+env SDL_VIDEODRIVER=wayland gamescope --backend sdl --display-index "$SDL_DISPLAY_INDEX" \
   --nested-width 1280 --nested-height 720 \
   --output-width 1920 --output-height 1080 \
   --scaler fit --filter fsr --sharpness 6 \
@@ -41,7 +41,8 @@ For isolated tests, use the safety-checked harness rather than a hard-coded SDL 
 cargo build --release -p nkscale-ui
 python scripts/headless_fsr_validation.py \
   --monitor HEADLESS-N --filter fsr \
-  --source 1280x720 --target 1920x1080 --sharpness 6
+  --source 1280x720 --target 1920x1080 --sharpness 6 \
+  --output-dir "${TMPDIR:-/tmp}/nkscale-validation-runs"
 ```
 
 The harness verifies that the named output has headless-only identity metadata,

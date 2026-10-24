@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import hashlib
 import json
 import math
 import os
-import platform
 import re
 import select
 import shlex
@@ -150,6 +150,9 @@ def revalidate_sdl_display_index(diagnostics: str, monitor: dict, expected_index
 def sanitize_diagnostics(diagnostics: str) -> str:
     sanitized = []
     for line in diagnostics.splitlines():
+        if line.startswith("GPU: "):
+            sanitized.append("GPU: <adapter details redacted>")
+            continue
         if not line.startswith("Display "):
             sanitized.append(line)
             continue
@@ -159,12 +162,15 @@ def sanitize_diagnostics(diagnostics: str) -> str:
             sanitized.append("Display: <redacted>")
             continue
         index, width, height, _, _ = match.groups()
-        connector = re.search(r"\(([^()]+)\)\s*·", line)
-        name = connector.group(1).strip() if connector else "HEADLESS OUTPUT"
-        refresh, x, y = details.groups()
-        sanitized.append(
-            f"Display {index}: {name} · {width}×{height} · {refresh} Hz at ({x}, {y})"
-        )
+        label = line.split(":", 1)[1].split("·", 1)[0].strip()
+        is_headless = not label or "HEADLESS" in label.upper()
+        if not is_headless:
+            sanitized.append(f"Display {index}: PHYSICAL OUTPUT · mode withheld")
+        else:
+            refresh = details.group(1)
+            sanitized.append(
+                f"Display {index}: HEADLESS TEST OUTPUT · {width}×{height} · {refresh} Hz"
+            )
     result = "\n".join(sanitized)
     return result + ("\n" if diagnostics.endswith("\n") else "")
 
@@ -228,6 +234,141 @@ def portable_gamescope_argv(
 def sanitize_home_paths(text: str, home_dir: str | Path | None = None) -> str:
     home = str(home_dir or Path.home()).rstrip("/")
     return text.replace(home, "$HOME") if home and home != "/" else text
+
+
+def sanitize_runtime_identifiers(text: str, home_dir: str | Path | None = None) -> str:
+    text = sanitize_home_paths(text, home_dir)
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    replacements = (
+        (r"(?i)(running compositor on wayland display\s+')([^']+)(')", r"\1<redacted>\3"),
+        (r"(?i)(starting Xwayland on ):\d+", r"\1<redacted>"),
+        (r"(?i)(node ID:\s*)\d+", r"\1<redacted>"),
+        (r"(?i)(\bID:\s*)\d+", r"\1<redacted>"),
+        (r"(?i)(\b(?:monitor|workspace)(?:_id)?\s*[:=]\s*\"?)\d+", r"\1<redacted>"),
+        (r"(?i)(\bstable[_ ]?id\s*[:=]\s*)[^\s,]+", r"\1<redacted>"),
+        (r"(?i)(window xid:\s*)0x[0-9a-f]+", r"\1<redacted>"),
+        (r"(?i)(wayland surface res id:\s*)\d+", r"\1<redacted>"),
+        (r"(?i)\b0x[0-9a-f]{6,}\b", "<address>"),
+        (r"\b(?:HDMI|DP|eDP|LVDS|VGA|DVI)-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\b", "PHYSICAL-OUTPUT"),
+        (r"\bHEADLESS-\d+\b", "HEADLESS-OUTPUT"),
+        (r"\bgamescope-\d+\b", "gamescope-<redacted>"),
+        (r"\bwayland-\d+\b", "wayland-<redacted>"),
+        (r"\bpipewire-\d+\b", "pipewire-<redacted>"),
+        (r"(?i)\b(?:pid|process\s*id)\s*[:= ]\s*\d+\b", "PID=<redacted>"),
+        (r"\bat\s+\(-?\d+,\s*-?\d+\)", "at (<redacted>)"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    text = re.sub(
+        r"(?i)(selecting physical device\s+')([^']+)(')",
+        r"\1<adapter details redacted>\3",
+        text,
+    )
+    text = re.sub(r"/run/user/\d+/(?:wayland|pipewire)-[^\s'\"]+", "<runtime-socket>", text)
+    return text
+
+
+def sanitize_gamescope_log(log_text: str, home_dir: str | Path | None = None) -> str:
+    return sanitize_runtime_identifiers(log_text, home_dir)
+
+
+def write_sanitized_text(path: Path, text: str) -> None:
+    path.write_text(sanitize_runtime_identifiers(text), encoding="utf-8")
+
+
+def sanitize_run_metadata(metadata: dict) -> dict:
+    result = copy.deepcopy(metadata)
+    monitor = result.pop("monitor", None)
+    if isinstance(monitor, dict):
+        result["test_output"] = {
+            "class": "headless",
+            "mode": {
+                "width": monitor.get("width"),
+                "height": monitor.get("height"),
+            },
+            "refresh_hz": monitor.get("refreshRate"),
+            "logical_scale": monitor.get("scale"),
+        }
+    result.pop("workspace_id", None)
+    focused_before = result.get("focused_monitor_before")
+    focused_after = result.get("focused_monitor_after")
+    result.pop("focused_monitor_before", None)
+    result.pop("focused_monitor_after", None)
+    monitor_unchanged = result.get("focus_monitor_unchanged")
+    if monitor_unchanged is None and focused_before is not None and focused_after is not None:
+        monitor_unchanged = focused_before == focused_after
+    if monitor_unchanged is not None:
+        result["focus_monitor_unchanged"] = monitor_unchanged
+    checkpoints = []
+    for checkpoint in result.get("focus_checkpoints", []):
+        checkpoint_monitor_unchanged = checkpoint.get("focus_monitor_unchanged")
+        if checkpoint_monitor_unchanged is None:
+            checkpoint_monitor = checkpoint.get("focused_monitor")
+            if checkpoint_monitor is not None and focused_before is not None:
+                checkpoint_monitor_unchanged = checkpoint_monitor == focused_before
+        checkpoints.append(
+            {
+                "stage": checkpoint.get("stage"),
+                "focus_monitor_unchanged": checkpoint_monitor_unchanged,
+                "focused_client_unchanged": checkpoint.get(
+                    "focused_client_unchanged", False
+                ),
+            }
+        )
+    if "focus_checkpoints" in result:
+        result["focus_checkpoints"] = checkpoints
+    window = result.get("gamescope_window")
+    if isinstance(window, dict):
+        result["gamescope_window"] = {
+            key: window[key]
+            for key in ("class", "logical_size", "fullscreen_state")
+            if key in window
+        }
+    versions = result.get("software_versions")
+    if isinstance(versions, dict):
+        result["software_versions"] = {
+            key: versions[key]
+            for key in ("nk_scale_sha256", "gamescope")
+            if key in versions
+        }
+    provenance = result.get("source_provenance")
+    if isinstance(provenance, dict):
+        if "worktree_clean" not in provenance:
+            if "tracked_source_dirty" in provenance:
+                known_dirty = bool(provenance["tracked_source_dirty"])
+            elif "git_dirty" in provenance:
+                known_dirty = bool(provenance["git_dirty"])
+            elif "worktree_clean_at_start" in provenance:
+                known_dirty = not bool(provenance["worktree_clean_at_start"])
+            else:
+                known_dirty = True
+            worktree_clean = False if known_dirty else None
+        else:
+            worktree_clean = bool(provenance["worktree_clean"])
+        clean_provenance = {"worktree_clean": worktree_clean}
+        for key in ("git_commit", "git_tree"):
+            if provenance.get(key):
+                clean_provenance[key] = provenance[key]
+        result["source_provenance"] = clean_provenance
+    else:
+        legacy_versions = metadata.get("software_versions", {})
+        if isinstance(legacy_versions, dict) and legacy_versions.get("git_commit"):
+            known_dirty = bool(legacy_versions.get("git_dirty", True))
+            result["source_provenance"] = {
+                "git_commit": legacy_versions["git_commit"],
+                "worktree_clean": False if known_dirty else None,
+            }
+    if "error" in result:
+        result["error"] = sanitize_runtime_identifiers(str(result["error"]))
+    return result
+
+
+def write_result_metadata(run_dir: Path, metadata: dict) -> dict:
+    sanitized = sanitize_run_metadata(metadata)
+    (run_dir / "result.json").write_text(
+        json.dumps(sanitized, indent=2) + "\n", encoding="utf-8"
+    )
+    return sanitized
 
 
 def build_gamescope_argv(
@@ -307,12 +448,37 @@ def build_lua_fullscreen_dispatch(pid: int) -> str:
     )
 
 
-def run_checked(argv: list[str], *, timeout: float = 30.0) -> subprocess.CompletedProcess:
-    result = subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
+def run_checked(
+    argv: list[str], *, timeout: float = 30.0, cwd: str | Path | None = None
+) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        argv, text=True, capture_output=True, timeout=timeout, cwd=cwd
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"Command failed ({result.returncode}): {shlex.join(argv)}\n{detail}")
     return result
+
+
+def git_source_provenance(repo_root: Path = REPO_ROOT) -> dict:
+    repo = Path(repo_root).resolve()
+    def git_value(*args: str) -> str:
+        return run_checked(
+            ["git", *args], timeout=10.0, cwd=repo
+        ).stdout.strip()
+
+    commit = git_value("rev-parse", "HEAD")
+    tree = git_value("rev-parse", "HEAD^{tree}")
+    status = run_checked(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        timeout=10.0,
+        cwd=repo,
+    ).stdout
+    return {
+        "git_commit": commit,
+        "git_tree": tree,
+        "worktree_clean": not bool(status.strip()),
+    }
 
 
 def hypr_json(command: str) -> list[dict]:
@@ -388,7 +554,7 @@ def record_focus_checkpoint(
     metadata.setdefault("focus_checkpoints", []).append(
         {
             "stage": stage,
-            "focused_monitor": focused_monitor_name(monitors),
+            "focus_monitor_unchanged": focused_monitor_name(monitors) == expected_monitor,
             "focused_client_unchanged": unchanged,
         }
     )
@@ -421,9 +587,16 @@ def require_pidfd_support() -> None:
         raise RuntimeError("Safe Gamescope cleanup requires Linux pidfd support.")
 
 
-def process_matches_gamescope(pid: int, stats_path: str) -> bool:
+def process_matches_gamescope(
+    pid: int, stats_path: str, expected_executable: str = "gamescope"
+) -> bool:
     command = proc_cmdline(pid)
-    return bool(command and Path(command[0]).name == "gamescope" and stats_path in command)
+    expected_basename = Path(expected_executable).name
+    return bool(
+        command
+        and Path(command[0]).name == expected_basename
+        and stats_path in command
+    )
 
 
 def pidfd_has_exited(pidfd: int) -> bool:
@@ -432,16 +605,20 @@ def pidfd_has_exited(pidfd: int) -> bool:
     return bool(poller.poll(0))
 
 
-def pin_gamescope_process(pid: int, stats_path: str) -> tuple[int, int] | None:
+def pin_gamescope_process(
+    pid: int, stats_path: str, expected_executable: str = "gamescope"
+) -> tuple[int, int] | None:
     require_pidfd_support()
-    if not process_matches_gamescope(pid, stats_path):
+    if not process_matches_gamescope(pid, stats_path, expected_executable):
         return None
     try:
         pidfd = os.pidfd_open(pid, 0)
     except (FileNotFoundError, ProcessLookupError):
         return None
     try:
-        if pidfd_has_exited(pidfd) or not process_matches_gamescope(pid, stats_path):
+        if pidfd_has_exited(pidfd) or not process_matches_gamescope(
+            pid, stats_path, expected_executable
+        ):
             os.close(pidfd)
             return None
         return pid, pidfd
@@ -450,12 +627,16 @@ def pin_gamescope_process(pid: int, stats_path: str) -> tuple[int, int] | None:
         raise
 
 
-def find_gamescope_process(stats_path: str) -> tuple[int, int] | None:
+def find_gamescope_process(
+    stats_path: str, expected_executable: str = "gamescope"
+) -> tuple[int, int] | None:
     require_pidfd_support()
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
-        owned = pin_gamescope_process(int(entry.name), stats_path)
+        owned = pin_gamescope_process(
+            int(entry.name), stats_path, expected_executable
+        )
         if owned is not None:
             return owned
     return None
@@ -511,6 +692,16 @@ def run_case(args: argparse.Namespace) -> dict:
         raise ValueError(f"NKScale binary does not exist: {app_path}")
     diagnostics = run_checked([str(app_path), "--diagnostics"], timeout=45.0)
     display_index = parse_sdl_display_index(diagnostics.stdout, monitor)
+    gamescope_version = next(
+        (
+            line.removeprefix("Gamescope: Available: ")
+            for line in diagnostics.stdout.splitlines()
+            if line.startswith("Gamescope: ")
+        ),
+        "unavailable",
+    )
+    source_provenance = git_source_provenance()
+    binary_sha256 = hashlib.sha256(app_path.read_bytes()).hexdigest()
 
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     source_label = f"{args.source[0]}x{args.source[1]}"
@@ -521,22 +712,6 @@ def run_case(args: argparse.Namespace) -> dict:
     (run_dir / "diagnostics.txt").write_text(
         sanitize_diagnostics(diagnostics.stdout + diagnostics.stderr), encoding="utf-8"
     )
-    gamescope_version = next(
-        (line.removeprefix("Gamescope: Available: ") for line in diagnostics.stdout.splitlines() if line.startswith("Gamescope: ")),
-        "unavailable",
-    )
-    gpu_diagnostic = next(
-        (line for line in diagnostics.stdout.splitlines() if line.startswith("GPU: ")),
-        "unavailable",
-    )
-    hyprland_version = run_checked(["hyprctl", "version"]).stdout.strip().splitlines()[0]
-    git_commit = run_checked(["git", "rev-parse", "--short", "HEAD"], timeout=10.0).stdout.strip()
-    git_dirty = bool(
-        run_checked(
-            ["git", "status", "--porcelain", "--untracked-files=no"], timeout=10.0
-        ).stdout.strip()
-    )
-    binary_sha256 = hashlib.sha256(app_path.read_bytes()).hexdigest()
     log_path = run_dir / "gamescope.log"
     stats_path = run_dir / "gamescope-stats.csv"
     capture_path = run_dir / "capture.png"
@@ -579,12 +754,8 @@ def run_case(args: argparse.Namespace) -> dict:
         "software_versions": {
             "nk_scale_sha256": binary_sha256,
             "gamescope": gamescope_version,
-            "hyprland": hyprland_version,
-            "kernel": platform.release(),
-            "gpu_diagnostic": gpu_diagnostic,
-            "git_commit": git_commit,
-            "git_dirty": git_dirty,
         },
+        "source_provenance": source_provenance,
         "log": portable_path(log_path, run_dir),
         "stats_path": portable_path(stats_path, run_dir),
         "capture": portable_path(capture_path, run_dir),
@@ -605,7 +776,7 @@ def run_case(args: argparse.Namespace) -> dict:
             "reason": "No validated per-session telemetry source was available.",
         },
     }
-    (run_dir / "result.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    write_result_metadata(run_dir, metadata)
 
     pid = None
     owned_process = None
@@ -657,14 +828,16 @@ def run_case(args: argparse.Namespace) -> dict:
             key: monitor.get(key)
             for key in ("name", "id", "x", "y", "width", "height", "refreshRate", "scale")
         }
-        (run_dir / "result.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        write_result_metadata(run_dir, metadata)
         dispatch = run_checked(["hyprctl", "eval", lua], timeout=15.0)
-        (run_dir / "dispatch.txt").write_text(dispatch.stdout + dispatch.stderr, encoding="utf-8")
+        write_sanitized_text(
+            run_dir / "dispatch.txt", dispatch.stdout + dispatch.stderr
+        )
         deadline = time.monotonic() + args.start_timeout
         window = None
         while time.monotonic() < deadline:
             if owned_process is None:
-                owned_process = find_gamescope_process(str(stats_path))
+                owned_process = find_gamescope_process(str(stats_path), args.gamescope)
                 if owned_process is not None:
                     pid = owned_process[0]
             if owned_process is not None:
@@ -717,8 +890,8 @@ def run_case(args: argparse.Namespace) -> dict:
             ["hyprctl", "eval", build_lua_fullscreen_dispatch(pid)], timeout=15.0
         )
         metadata["fullscreen_dispatched_after_placement"] = True
-        (run_dir / "fullscreen-dispatch.txt").write_text(
-            fullscreen.stdout + fullscreen.stderr, encoding="utf-8"
+        write_sanitized_text(
+            run_dir / "fullscreen-dispatch.txt", fullscreen.stdout + fullscreen.stderr
         )
         fullscreen_deadline = time.monotonic() + 2.0
         while time.monotonic() < fullscreen_deadline:
@@ -796,20 +969,19 @@ def run_case(args: argparse.Namespace) -> dict:
     except Exception as exc:  # record failure, then always clean up this run's process
         error = f"{type(exc).__name__}: {exc}"
         error = error.replace(str(run_dir), "$RUN_DIR").replace(str(REPO_ROOT), "$REPO")
-        error = sanitize_home_paths(error)
+        error = sanitize_runtime_identifiers(error)
         metadata["result"] = "failed"
         metadata["error"] = error
     finally:
         if owned_process is None:
-            owned_process = find_gamescope_process(str(stats_path))
+            owned_process = find_gamescope_process(str(stats_path), args.gamescope)
         terminate_owned_process(owned_process)
         if log_path.exists():
             log_path.write_text(
-                sanitize_home_paths(log_path.read_text(errors="replace")), encoding="utf-8"
+                sanitize_gamescope_log(log_path.read_text(errors="replace")), encoding="utf-8"
             )
         monitors_after = hypr_json("monitors")
-        metadata["focused_monitor_before"] = focused_before
-        metadata["focused_monitor_after"] = focused_monitor_name(monitors_after)
+        metadata["focus_monitor_unchanged"] = focused_monitor_name(monitors_after) == focused_before
         metadata["focused_window_unchanged"] = record_focus_checkpoint(
             metadata,
             "after_cleanup",
@@ -818,12 +990,12 @@ def run_case(args: argparse.Namespace) -> dict:
             monitors_after,
         )
         metadata["physical_modes_unchanged"] = physical_mode_snapshot(monitors_after) == physical_before
-        if metadata["focused_monitor_after"] != focused_before or not metadata["focused_window_unchanged"]:
+        if not metadata["focus_monitor_unchanged"] or not metadata["focused_window_unchanged"]:
             metadata["focus_changed_during_test"] = True
         if not metadata["physical_modes_unchanged"]:
             metadata["physical_modes_changed_during_test"] = True
         metadata["stopped_at_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        (run_dir / "result.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        write_result_metadata(run_dir, metadata)
 
     if error:
         raise RuntimeError(
@@ -834,7 +1006,7 @@ def run_case(args: argparse.Namespace) -> dict:
             "Safety invariant changed; inspect "
             f"{portable_path(run_dir / 'result.json', run_dir)}"
         )
-    return metadata
+    return sanitize_run_metadata(metadata)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -858,7 +1030,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run_case(args)
     except Exception as error:
-        print(f"ERROR: {sanitize_home_paths(str(error))}", file=sys.stderr)
+        print(f"ERROR: {sanitize_runtime_identifiers(str(error))}", file=sys.stderr)
         return 1
     print(
         json.dumps(
@@ -866,7 +1038,7 @@ def main(argv: list[str] | None = None) -> int:
                 key: result.get(key)
                 for key in (
                     "result",
-                    "monitor",
+                    "test_output",
                     "source_resolution_requested",
                     "gamescope_target_resolution_requested",
                     "filter_requested",

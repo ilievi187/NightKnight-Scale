@@ -1,17 +1,6 @@
 {
   "timestamp_utc": "20261023T234617Z",
   "result": "captured",
-  "monitor": {
-    "name": "HEADLESS-3",
-    "id": 4,
-    "x": 10240,
-    "y": 0,
-    "width": 1920,
-    "height": 1080,
-    "refreshRate": 60.0,
-    "scale": 1.25
-  },
-  "workspace_id": 3,
   "sdl_display_index": 4,
   "source_resolution_requested": {
     "width": 1600,
@@ -62,12 +51,7 @@
   "process_cleanup": "pidfd; executable and unique stats-path marker verified before signaling",
   "software_versions": {
     "nk_scale_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68",
-    "gamescope": "Gamescope 3.16.31 (gcc 16.2.1)",
-    "hyprland": "Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs).",
-    "kernel": "7.2.8-9-omarchy",
-    "gpu_diagnostic": "GPU: Vulkan adapter: AMD Radeon RX 7900 XT (RADV NAVI31) \u00b7 DiscreteGpu \u00b7 Mesa 26.2.5-arch1.1",
-    "git_commit": "4a3a3dd",
-    "git_dirty": true
+    "gamescope": "Gamescope 3.16.31 (gcc 16.2.1)"
   },
   "log": "$RUN_DIR/gamescope.log",
   "stats_path": "$RUN_DIR/gamescope-stats.csv",
@@ -80,32 +64,32 @@
   "focus_checkpoints": [
     {
       "stage": "prelaunch_before_diagnostics",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     },
     {
       "stage": "prelaunch_after_diagnostics",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     },
     {
       "stage": "before_fullscreen",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     },
     {
       "stage": "fullscreen_transition",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     },
     {
       "stage": "before_capture",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     },
     {
       "stage": "after_cleanup",
-      "focused_monitor": "DP-1",
+      "focus_monitor_unchanged": true,
       "focused_client_unchanged": true
     }
   ],
@@ -135,10 +119,7 @@
   },
   "gamescope_toplevel_capture_verified": true,
   "gamescope_window": {
-    "pid": 2384220,
     "class": "gamescope",
-    "monitor_id": 4,
-    "workspace_id": 3,
     "logical_size": [
       1536,
       864
@@ -146,8 +127,20 @@
     "fullscreen_state": 2
   },
   "stats_file_created": false,
-  "focused_monitor_before": "DP-1",
-  "focused_monitor_after": "DP-1",
   "physical_modes_unchanged": true,
-  "stopped_at_utc": "2026-10-23T23:46:18.940889+00:00"
+  "stopped_at_utc": "2026-10-23T23:46:18.940889+00:00",
+  "test_output": {
+    "class": "headless",
+    "mode": {
+      "width": 1920,
+      "height": 1080
+    },
+    "refresh_hz": 60.0,
+    "logical_scale": 1.25
+  },
+  "focus_monitor_unchanged": true,
+  "source_provenance": {
+    "worktree_clean": false,
+    "git_commit": "4a3a3dd"
+  }
 }
