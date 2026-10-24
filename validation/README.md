@@ -55,7 +55,9 @@ sharpness values `0`, `6`, and `20`. The optional `--disable-lsfgvk` flag sets
 `DISABLE_LSFGVK=1` only for the Gamescope test process and never edits the
 user's LSFG-VK configuration. Each invocation creates a timestamped directory
 under the requested `--output-dir` (default: `validation/runs/`) with `result.json`,
-the exact Gamescope argv, sanitized logs/metadata, and the captured PNG. Use a
+sanitized Gamescope argv/logs/metadata, and the captured PNG. The volatile SDL
+display-index value and absolute system paths are redacted from committed evidence.
+Use a
 scratch directory outside the checkout for a clean source-provenance record; if
 you write to the checkout, later runs correctly report that the worktree is dirty.
 The 4K-target replay uses
@@ -65,17 +67,20 @@ performance measurement.
 
 ## Captured cases
 
-Ten distinct matrix cases produced valid Gamescope-toplevel captures on a
-dedicated headless output; each PNG is 1920×1080, matching the headless host mode. The
-foreign-toplevel capture excludes host compositor overlays. There are 11 run
-records because the initial 4K-target attempt reached the default 8-second mapping
-timeout; a 20-second retry captured the chart. The failed attempt remains in the
-record with no capture. Exact requested dimensions, Gamescope options, selected
-filter, capture result, window state, sanitized version/output-class metadata,
-and limitations are in each run's `result.json` and `gamescope.log`. Path tokens
-in the recorded argv use `$REPO` and `$RUN_DIR` placeholders. Logs and diagnostics
-redact physical connector/mode data, coordinates, GPU model, process/runtime IDs,
-and home-directory paths; the selected headless mode and capture dimensions remain.
+Ten distinct matrix cases have valid Gamescope-toplevel captures on a dedicated
+headless output; all twenty retained captures (ten historical and ten clean) are
+1920×1080, matching the headless host mode. The foreign-toplevel capture excludes
+host compositor overlays. The 21 run records preserve the original ten
+historical, unpinned captures and one historical 8-second 4K-target timeout, and
+add ten successful captures from one clean source tree. The failed run has no
+capture. The clean 20-second 4K-target retry captured a 1920×1080 chart, not a 4K
+buffer. Exact requested dimensions, selected filter, capture result, window state,
+sanitized version/output-class metadata, and limitations are in each run's
+`result.json` and `gamescope.log`. Path tokens in the recorded argv use `$REPO`,
+`$RUN_DIR`, and `$SYSTEM` placeholders; the numeric display-index value is
+redacted. Logs and diagnostics redact physical connector/mode data, coordinates,
+GPU model, process/runtime IDs, SDL display indices, and absolute filesystem paths;
+the selected headless mode and capture dimensions remain.
 
 | Case | Requested source → Gamescope target | Filter |
 |---|---:|---|
@@ -91,9 +96,13 @@ and home-directory paths; the selected headless mode and capture dimensions rema
 | LSFG isolation check | 1280×720 → 1920×1080 | fsr, sharpness 6; LSFG-VK disabled for this process |
 
 `comparison.png` is a labeled visual contact sheet of the native-size, linear
-720p→1080p, and FSR sharpness 0/6/20 captures. The original 1920×1080 images
-remain in their run directories. `results.csv` is the per-case machine-readable
-summary. `image-differences.json` records deterministic screenshot differences;
+720p→1080p, and FSR sharpness 0/6/20 captures. The ten clean run JSON records
+share a full source commit/tree and clean worktree status; the historical records
+are preserved and marked dirty/unpinned. The original 1920×1080 images remain in
+their run directories. `results.csv` is the per-case machine-readable
+summary. The pre-rerun comparison sheet, environment manifest, metrics JSON, and
+sanitized historical CSV are preserved under `validation/history/`.
+`image-differences.json` records full-frame screenshot differences only;
 these are pixel comparisons, not performance measurements.
 
 ## What the evidence establishes

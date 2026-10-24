@@ -1,9 +1,9 @@
 Gamescope: Available: Gamescope 3.16.31 (gcc 16.2.1)
 GPU: <adapter details redacted>
-Display 0: PHYSICAL OUTPUT · mode withheld
-Display 1: PHYSICAL OUTPUT · mode withheld
-Display 2: PHYSICAL OUTPUT · mode withheld
-Display 3: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz
-Display 4: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz
+Display <redacted>: PHYSICAL OUTPUT · mode withheld
+Display <redacted>: PHYSICAL OUTPUT · mode withheld
+Display <redacted>: PHYSICAL OUTPUT · mode withheld
+Display <redacted>: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz
+Display <redacted>: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz
 (lsfg-vk) [ERROR]: Failed to initialize global info:
 (lsfg-vk) [ERROR]: - Unknown key in profile section: gpu

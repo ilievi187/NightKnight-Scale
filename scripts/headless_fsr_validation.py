@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DISPLAY_LINE = re.compile(
@@ -156,23 +157,34 @@ def sanitize_diagnostics(diagnostics: str) -> str:
         if not line.startswith("Display "):
             sanitized.append(line)
             continue
+        if line.startswith("Display <redacted>:"):
+            sanitized.append(line)
+            continue
+        legacy = re.match(
+            r"^Display\s+\d+:\s*(PHYSICAL OUTPUT · mode withheld|HEADLESS TEST OUTPUT · \d+×\d+ · [0-9.]+ Hz)$",
+            line,
+        )
+        if legacy:
+            sanitized.append(f"Display <redacted>: {legacy.group(1)}")
+            continue
         match = DISPLAY_LINE.match(line)
         details = re.search(r"·\s*([0-9.]+)\s*Hz at \((-?\d+),\s*(-?\d+)\)\s*$", line)
         if not match or not details:
             sanitized.append("Display: <redacted>")
             continue
-        index, width, height, _, _ = match.groups()
+        _, width, height, _, _ = match.groups()
         label = line.split(":", 1)[1].split("·", 1)[0].strip()
         is_headless = not label or "HEADLESS" in label.upper()
         if not is_headless:
-            sanitized.append(f"Display {index}: PHYSICAL OUTPUT · mode withheld")
+            sanitized.append("Display <redacted>: PHYSICAL OUTPUT · mode withheld")
         else:
             refresh = details.group(1)
             sanitized.append(
-                f"Display {index}: HEADLESS TEST OUTPUT · {width}×{height} · {refresh} Hz"
+                f"Display <redacted>: HEADLESS TEST OUTPUT · {width}×{height} · {refresh} Hz"
             )
     result = "\n".join(sanitized)
-    return result + ("\n" if diagnostics.endswith("\n") else "")
+    result += "\n" if diagnostics.endswith("\n") else ""
+    return sanitize_runtime_identifiers(result)
 
 
 def parse_resolution(value: str) -> tuple[int, int]:
@@ -210,7 +222,7 @@ def portable_path(
         relative = path.relative_to(home)
         return "$HOME" if str(relative) == "." else f"$HOME/{relative.as_posix()}"
     except ValueError:
-        return str(value)
+        return f"$SYSTEM/{path.name}" if path.is_absolute() else str(value)
 
 
 def portable_gamescope_argv(
@@ -236,6 +248,33 @@ def sanitize_home_paths(text: str, home_dir: str | Path | None = None) -> str:
     return text.replace(home, "$HOME") if home and home != "/" else text
 
 
+URL_PATTERN = re.compile(r"(?i)\b(?!file://)[a-z][a-z0-9+.-]*://[^\s'\"<>]+")
+
+
+def redact_absolute_paths(text: str) -> str:
+    def redact_segment(segment: str) -> str:
+        segment = re.sub(r"(?i)\bfile:///(?:[^\s'\"<>]+)", "file:///<filesystem-path>", segment)
+        segment = re.sub(
+            r"(?P<quote>['\"])(?P<path>/(?!/)[^'\"\r\n]+)(?P=quote)",
+            lambda match: f"{match.group('quote')}<filesystem-path>{match.group('quote')}",
+            segment,
+        )
+        return re.sub(
+            r"(?<![\w$:/])/(?!/)[^\s'\"<>|]+",
+            "<filesystem-path>",
+            segment,
+        )
+
+    parts = []
+    cursor = 0
+    for match in URL_PATTERN.finditer(text):
+        parts.append(redact_segment(text[cursor:match.start()]))
+        parts.append(match.group())
+        cursor = match.end()
+    parts.append(redact_segment(text[cursor:]))
+    return "".join(parts)
+
+
 def sanitize_runtime_identifiers(text: str, home_dir: str | Path | None = None) -> str:
     text = sanitize_home_paths(text, home_dir)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
@@ -248,6 +287,8 @@ def sanitize_runtime_identifiers(text: str, home_dir: str | Path | None = None) 
         (r"(?i)(\bstable[_ ]?id\s*[:=]\s*)[^\s,]+", r"\1<redacted>"),
         (r"(?i)(window xid:\s*)0x[0-9a-f]+", r"\1<redacted>"),
         (r"(?i)(wayland surface res id:\s*)\d+", r"\1<redacted>"),
+        (r"(?i)(--display-index(?:\s*=\s*|\s+))\d+\b", r"\1<redacted>"),
+        (r"(?i)(\bSDL\s+(?:Wayland\s+)?display\s+index\s*[:=]\s*)\d+\b", r"\1<redacted>"),
         (r"(?i)\b0x[0-9a-f]{6,}\b", "<address>"),
         (r"\b(?:HDMI|DP|eDP|LVDS|VGA|DVI)-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\b", "PHYSICAL-OUTPUT"),
         (r"\bHEADLESS-\d+\b", "HEADLESS-OUTPUT"),
@@ -265,7 +306,12 @@ def sanitize_runtime_identifiers(text: str, home_dir: str | Path | None = None) 
         text,
     )
     text = re.sub(r"/run/user/\d+/(?:wayland|pipewire)-[^\s'\"]+", "<runtime-socket>", text)
-    return text
+    text = re.sub(
+        r"(?<![\w$])/usr/bin/gamescope(?=$|[\s'\"),;])",
+        "$SYSTEM/gamescope",
+        text,
+    )
+    return redact_absolute_paths(text)
 
 
 def sanitize_gamescope_log(log_text: str, home_dir: str | Path | None = None) -> str:
@@ -276,8 +322,35 @@ def write_sanitized_text(path: Path, text: str) -> None:
     path.write_text(sanitize_runtime_identifiers(text), encoding="utf-8")
 
 
+def sanitize_json_values(value: Any) -> Any:
+    if isinstance(value, str):
+        return sanitize_runtime_identifiers(value)
+    if isinstance(value, list):
+        return [sanitize_json_values(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_json_values(item) for key, item in value.items()}
+    return value
+
+
 def sanitize_run_metadata(metadata: dict) -> dict:
     result = copy.deepcopy(metadata)
+    result.pop("sdl_display_index", None)
+    argv = result.get("gamescope_argv")
+    if isinstance(argv, list):
+        sanitized_argv = []
+        redact_next = False
+        for token in argv:
+            if redact_next:
+                sanitized_argv.append("<redacted>")
+                redact_next = False
+                continue
+            sanitized_token = sanitize_runtime_identifiers(str(token))
+            sanitized_argv.append(sanitized_token)
+            if sanitized_token == "--display-index":
+                redact_next = True
+        if redact_next:
+            sanitized_argv.append("<redacted>")
+        result["gamescope_argv"] = sanitized_argv
     monitor = result.pop("monitor", None)
     if isinstance(monitor, dict):
         result["test_output"] = {
@@ -360,7 +433,7 @@ def sanitize_run_metadata(metadata: dict) -> dict:
             }
     if "error" in result:
         result["error"] = sanitize_runtime_identifiers(str(result["error"]))
-    return result
+    return sanitize_json_values(result)
 
 
 def write_result_metadata(run_dir: Path, metadata: dict) -> dict:

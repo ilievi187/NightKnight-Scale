@@ -1,5 +1,5 @@
 {
-  "captured_at_utc": "2026-10-23T23:54:18.278368+00:00",
+  "captured_at_utc": "2026-10-24T12:02:59.471345+00:00",
   "software": {
     "gamescope": "3.16.31",
     "hyprland": "0.56.2",
@@ -27,18 +27,28 @@
   },
   "capture_method": "grim -T on verified Gamescope foreign-toplevel; stable handle used in memory and excluded from evidence",
   "matrix_run_counts": {
-    "attempts": 11,
-    "captured": 10,
+    "attempts": 21,
+    "captured": 20,
     "failed": 1,
-    "unique_cases": 10,
-    "source_provenance": "historical captures recorded a dirty worktree; exact source tree not recorded"
+    "unique_cases": 10
+  },
+  "source_provenance": {
+    "clean_capture_commit": "bf2f9900e9745a2c9148b0f70001e7fd5bff48d7",
+    "clean_capture_tree": "27feb74255e30879b1a28fab31d5889c28313e89",
+    "clean_capture_worktree_clean": true,
+    "clean_capture_count": 10,
+    "preserved_historical_capture_count": 10,
+    "preserved_historical_capture_worktree_clean": false,
+    "retained_historical_failure_commit": "4a3a3dd",
+    "retained_historical_failure_worktree_clean": false,
+    "retained_historical_failure_tree_recorded": false
   },
   "physical_modes_unchanged_in_all_records": true,
   "notes": [
-    "Physical outputs were never targeted; connector names, physical modes, positions, and focus target names are not persisted.",
-    "The test used a separate idle headless output; the output with a pre-existing window was left untouched.",
-    "Process PIDs, monitor/workspace IDs, Wayland/Xwayland display IDs, PipeWire node IDs, and memory addresses are redacted.",
-    "All committed PNG captures are 1920x1080; 1440p, ultrawide, and 4K are requested Gamescope targets only.",
+    "Physical outputs were never targeted; connector names, physical modes, positions, focus target names, numeric SDL display indices, and absolute filesystem paths are not persisted.",
+    "Ten new successful matrix captures share the clean commit/tree above. Ten prior successful captures and one historical 8-second 4K-target timeout are preserved as dirty/unpinned records; the failed attempt has no capture.",
+    "All twenty captures are 1920x1080; 1440p, ultrawide, and 4K remain requested targets, not measured target-buffer or scanout sizes.",
+    "Process PIDs, monitor/workspace IDs, Wayland/Xwayland display IDs, PipeWire node/socket IDs, memory addresses, and host filesystem paths are redacted.",
     "Shader dispatch and performance metrics remain unverified."
   ]
 }

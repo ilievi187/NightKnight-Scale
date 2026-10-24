@@ -6,16 +6,18 @@ validate a native NKScale Vulkan renderer or portal/PipeWire capture.
 
 ## Environment and isolation
 
-Final captures were made on 2026-10-23 UTC with Gamescope 3.16.31, Hyprland
+The clean matrix rerun was captured on 2026-10-24 UTC with Gamescope 3.16.31, Hyprland
 0.56.2, and the RADV/Mesa 26.2.5 Vulkan driver. SDL's Wayland video driver was
 explicitly selected before display enumeration. The full GPU model, kernel build,
 Hyprland build identifier, physical connector names/modes, and desktop coordinates
 are intentionally not published.
 
 A pre-existing headless output with a window was left untouched. A separate idle
-headless test output was used at 1920×1080@60 Hz and scale 1.25. Its volatile SDL
-display index is stored only as a run-scoped diagnostic and in the exact Gamescope
-argv; it is not treated as a stable output identity. `validation/environment.json` contains only
+headless test output was used at 1920×1080@60 Hz and scale 1.25. The volatile SDL
+display index is resolved and revalidated at launch, then redacted from committed
+JSON, CSV, diagnostics, logs, and argv; it is not treated as a stable output
+identity. Absolute system paths are also replaced with placeholders.
+`validation/environment.json` contains only
 sanitized software-version and output-class metadata—no physical output inventory,
 connector names, coordinates, workspace identifiers, or runtime IDs.
 
@@ -30,11 +32,13 @@ IDs, connector names, and runtime sockets are used only in memory and are not
 persisted. Logs and result metadata are sanitized before writing. Focus checkpoints
 record only whether the original monitor and client remained unchanged; continuous
 input/focus tracing is not claimed. Physical modes were unchanged in all ten
-captured runs. There are 11 historical run records for 10 unique matrix cases: the
-first 4K-target attempt hit the default 8-second mapping timeout and produced no
-capture; the 20-second retry captured the chart. Both attempts used a 1920×1080
-headless host output, and only the retry produced a PNG. Neither run establishes a
-4K capture or target-buffer size. The temporary test output is not automatically removed
+clean captured runs. There are 21 run records for ten unique matrix cases: ten
+preserved historical captures from dirty/unpinned runs, one preserved historical
+8-second 4K-target timeout from an unpinned worktree, and ten new successful
+captures from one clean source tree. The timeout produced no capture. All twenty
+captures are 1920×1080; the clean 20-second 4K-target retry captured a chart on
+the 1920×1080 headless host output. Neither 4K-target run establishes a 4K capture
+or target-buffer size. The temporary test output is not automatically removed
 because the harness must never remove an output it did not create.
 
 The GUI placement check likewise used the dedicated headless workspace and a
@@ -54,9 +58,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 python -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-The Rust format, tests, and Clippy checks passed; the release build of `nkscale-ui` succeeded. The Python headless-harness suite passed 29 tests covering physical/occupied-output rejection, headless identity and revalidation, verified Gamescope-toplevel capture, SDL-index mapping, preflight/fullscreen planning, pidfd cleanup for standard/custom executable names, focus checkpoints, repository-rooted provenance including untracked files, and diagnostics/JSON/CSV/log/dispatch redaction. `nk-scale --diagnostics` detected Gamescope, a Vulkan adapter, and the available outputs.
+The Rust format, tests, and Clippy checks passed; the release build of `nkscale-ui` succeeded. The Python headless-harness suite passed 32 tests covering physical/occupied-output rejection, headless identity and revalidation, verified Gamescope-toplevel capture, SDL-index mapping and publication redaction, preflight/fullscreen planning, pidfd cleanup for standard/custom executable names, focus checkpoints, repository-rooted provenance including untracked files, idempotent absolute-path/runtime redaction including both display-index argument forms, and consistency of comparison labels and pixel metrics with machine-readable evidence. `nk-scale --diagnostics` detected Gamescope, a Vulkan adapter, and the available outputs.
 
-The harness records full Git commit/tree provenance and whole-worktree cleanliness from the repository root. Use a scratch `--output-dir` outside the checkout for clean provenance; new output directories written into the checkout make later runs correctly report a dirty worktree. The currently committed matrix captures record a dirty worktree and no source-tree hash, so they are historical visual evidence rather than source-pinned validation. Replace them with a clean rerun before treating the matrix as release evidence.
+The harness records full Git commit/tree provenance and whole-worktree cleanliness from the repository root, including untracked files. Ten successful current matrix runs share the same clean commit/tree; the single retained 8-second failure is marked as an older dirty, unpinned run with no capture. For future clean provenance, set `--output-dir` to a scratch location outside the checkout; later runs written into the repository correctly report a dirty worktree.
 
 Remote CI status is tracked on PR #2; use its live checks as the source of truth.
 Each follow-up commit requires a fresh check before merge.
@@ -72,9 +76,10 @@ cleanup. See `validation/README.md` for commands and limitations.
 The deterministic chart includes 1–8 px checker/edge patterns, fine text,
 diagonals, detailed texture, small UI elements, color bars, and a grayscale ramp.
 `validation/comparison.png` labels the native-size linear reference, 720p linear
-reference, and FSR sharpness 0/6/20 captures. Original captures, per-run argv,
+reference, and FSR sharpness 0/6/20 captures. Original captures, redacted per-run argv,
 versions and logs are retained under `validation/runs/`. `validation/results.csv`
-records 11 attempts for 10 unique cases, including the failed 8-second 4K start;
+records 21 attempts for 10 unique cases, preserving the ten historical captures
+and failed 8-second 4K start alongside the ten clean rerun captures;
 `validation/image-differences.json` summarizes the six pixel-comparison pairs.
 
 Gamescope 3.16.31's local help identifies `--filter fsr` as AMD FidelityFX
@@ -90,10 +95,10 @@ Full-frame luma comparison results (2,073,600 pixels per capture):
 
 | Comparison | Changed luma pixels | Changed | Mean absolute luma difference |
 |---|---:|---:|---:|
-| Linear 1280×720→1920×1080 vs FSR sharpness 0 | 652,738 | 31.4785% | 4.8393 |
+| Linear 1280×720→1920×1080 vs FSR sharpness 0 | 652,740 | 31.4786% | 4.8394 |
 | Linear 1280×720→1920×1080 vs FSR sharpness 6 | 631,754 | 30.4665% | 4.4442 |
 | Linear 1280×720→1920×1080 vs FSR sharpness 20 | 421,627 | 20.3331% | 4.1129 |
-| FSR sharpness 0 vs 6 | 327,166 | 15.7777% | 0.4359 |
+| FSR sharpness 0 vs 6 | 327,182 | 15.7785% | 0.4360 |
 | FSR sharpness 6 vs 20 | 466,441 | 22.4943% | 0.4217 |
 | Default LSFG-VK layer vs process-disabled | 225 | 0.0109% | 0.0001 |
 

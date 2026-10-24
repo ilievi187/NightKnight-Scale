@@ -1,7 +1,6 @@
 {
   "timestamp_utc": "20261023T231910Z",
   "result": "failed",
-  "sdl_display_index": 4,
   "source_resolution_requested": {
     "width": 1920,
     "height": 1080
@@ -13,11 +12,11 @@
   "filter_requested": "fsr",
   "sharpness_requested": 6,
   "gamescope_argv": [
-    "/usr/bin/gamescope",
+    "$SYSTEM/gamescope",
     "--backend",
     "sdl",
     "--display-index",
-    "4",
+    "<redacted>",
     "--nested-width",
     "1920",
     "--nested-height",

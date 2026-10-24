@@ -139,7 +139,7 @@ class HeadlessFsrValidationTests(unittest.TestCase):
             portable_path(repo / "target/release/nk-scale", run, repo),
             "$REPO/target/release/nk-scale",
         )
-        self.assertEqual(portable_path("/usr/bin/gamescope", run, repo), "/usr/bin/gamescope")
+        self.assertEqual(portable_path("/usr/bin/gamescope", run, repo), "$SYSTEM/gamescope")
         self.assertEqual(
             portable_path("/home/testuser/bin/gamescope", run, repo, "/home/testuser"),
             "$HOME/bin/gamescope",
@@ -195,8 +195,8 @@ class HeadlessFsrValidationTests(unittest.TestCase):
         sanitized = sanitize_diagnostics(raw)
         self.assertEqual(
             sanitized,
-            "Display 2: PHYSICAL OUTPUT · mode withheld\n"
-            "Display 9: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz\n"
+            "Display <redacted>: PHYSICAL OUTPUT · mode withheld\n"
+            "Display <redacted>: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz\n"
             "GPU: <adapter details redacted>",
         )
         for private in ("DP-TEST-OUTPUT", "SERIAL-TEST-0001", "MODEL-0001", "400, 100", "8000, 300", "500 Hz", "Example Adapter"):
@@ -302,12 +302,17 @@ class HeadlessFsrValidationTests(unittest.TestCase):
         validation_root = validation.REPO_ROOT / "validation"
         forbidden_patterns = (
             r"/home/",
+            r"/(?:usr|etc|opt|var|proc|sys|run|tmp|root|mnt|media)/",
+            r"(?<![\w$:/])/(?!/)[^\s'\"<>|]+",
             r"\b(?:HDMI|DP|eDP|LVDS|VGA|DVI)-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\b",
             r"\bHEADLESS-\d+\b",
             r"\b(?:gamescope|wayland)-\d+\b",
             r"node ID:\s*\d+",
             r"(?:window xid:|swapchain:)\s*0x[0-9a-f]+",
             r"\b0x[0-9a-f]{9,}\b",
+            r"--display-index(?:\s*=\s*|\s+)\d+",
+            r"(?m)^Display\s+\d+:",
+            r"\bsdl_display_index\b",
         )
         for path in validation_root.rglob("*"):
             if path.suffix.lower() not in {".json", ".csv", ".log", ".txt"}:
@@ -322,7 +327,12 @@ class HeadlessFsrValidationTests(unittest.TestCase):
                 self.assertNotIn("workspace_id", data)
                 self.assertNotIn("focused_monitor_before", data)
                 self.assertNotIn("focused_monitor_after", data)
+                self.assertNotIn("sdl_display_index", data)
                 self.assertNotIn("pid", data.get("gamescope_window", {}))
+                argv = data.get("gamescope_argv", [])
+                if "--display-index" in argv:
+                    index = argv.index("--display-index")
+                    self.assertEqual(argv[index + 1], "<redacted>")
             if path.name == "results.csv":
                 headers = next(csv.reader(text.splitlines()))
                 for private_header in (
@@ -331,6 +341,7 @@ class HeadlessFsrValidationTests(unittest.TestCase):
                     "focused_monitor_before",
                     "focused_monitor_after",
                     "gpu_diagnostic",
+                    "sdl_display_index",
                 ):
                     self.assertNotIn(private_header, headers)
             if path.name == "diagnostics.txt":
@@ -341,11 +352,99 @@ class HeadlessFsrValidationTests(unittest.TestCase):
                 for line in display_lines:
                     self.assertRegex(
                         line,
-                        r"^Display \d+: (?:PHYSICAL OUTPUT · mode withheld|HEADLESS TEST OUTPUT · \d+×\d+ · [0-9.]+ Hz)$",
+                        r"^Display <redacted>: (?:PHYSICAL OUTPUT · mode withheld|HEADLESS TEST OUTPUT · \d+×\d+ · [0-9.]+ Hz)$",
                     )
                 self.assertTrue(any("HEADLESS TEST OUTPUT" in line for line in display_lines))
                 if "GPU:" in text:
                     self.assertIn("GPU: <adapter details redacted>", text)
+
+    def test_sanitizer_redacts_system_paths_and_sdl_display_indices(self):
+        text = (
+            "/usr/bin/gamescope --display-index 4 "
+            "'/usr/share/gamescope/scripts/example.lua' '/etc/gamescope/scripts'"
+        )
+        sanitized = validation.sanitize_runtime_identifiers(text)
+        self.assertNotRegex(sanitized, r"/(?:usr|etc)/")
+        self.assertNotRegex(sanitized, r"--display-index\s+\d+")
+        self.assertIn("$SYSTEM/gamescope", sanitized)
+        self.assertIn("--display-index <redacted>", sanitized)
+
+        metadata = validation.sanitize_run_metadata(
+            {
+                "sdl_display_index": 4,
+                "gamescope_argv": ["$SYSTEM/gamescope", "--display-index", "4"],
+            }
+        )
+        self.assertNotIn("sdl_display_index", metadata)
+        self.assertEqual(
+            metadata["gamescope_argv"],
+            ["$SYSTEM/gamescope", "--display-index", "<redacted>"],
+        )
+
+        raw_diagnostic = (
+            "Gamescope executable: /usr/bin/gamescope\n"
+            "Display 4:  · 1920×1080 · 60 Hz at (8000, 300)"
+        )
+        diagnostic = sanitize_diagnostics(raw_diagnostic)
+        self.assertEqual(
+            diagnostic,
+            "Gamescope executable: $SYSTEM/gamescope\n"
+            "Display <redacted>: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz",
+        )
+        self.assertEqual(sanitize_diagnostics(diagnostic), diagnostic)
+        legacy_diagnostic = (
+            "Display 4: PHYSICAL OUTPUT · mode withheld\n"
+            "Display 9: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz"
+        )
+        self.assertEqual(
+            sanitize_diagnostics(legacy_diagnostic),
+            "Display <redacted>: PHYSICAL OUTPUT · mode withheld\n"
+            "Display <redacted>: HEADLESS TEST OUTPUT · 1920×1080 · 60 Hz",
+        )
+
+    def test_sanitizer_redacts_unlisted_absolute_paths_and_both_index_forms(self):
+        text = (
+            "device=/dev/dri/renderD128 module='/lib/modules/example.ko' "
+            "game='/opt/Games/My Game/bin/game' "
+            "--display-index=4 --display-index = 9 "
+            "url=https://gamescope.dev/docs?asset=/dev/dri/renderD128"
+        )
+        sanitized = validation.sanitize_runtime_identifiers(text)
+        for private in ("/lib/", "/opt/", "My Game", "--display-index=4", "--display-index = 9"):
+            self.assertNotIn(private, sanitized)
+        self.assertIn("device=<filesystem-path>", sanitized)
+        self.assertIn("url=https://gamescope.dev/docs?asset=/dev/dri/renderD128", sanitized)
+        self.assertIn("--display-index=<redacted>", sanitized)
+        self.assertIn("--display-index = <redacted>", sanitized)
+        self.assertIn("https://gamescope.dev/docs", sanitized)
+        self.assertEqual(validation.sanitize_runtime_identifiers(sanitized), sanitized)
+
+    def test_documented_pixel_metrics_match_machine_readable_comparisons(self):
+        validation_root = validation.REPO_ROOT / "validation"
+        comparisons = json.loads(
+            (validation_root / "image-differences.json").read_text(encoding="utf-8")
+        )["comparisons"]
+        docs = (validation.REPO_ROOT / "docs/validation.md").read_text(encoding="utf-8")
+        start = docs.index("| Comparison | Changed luma pixels | Changed | Mean absolute luma difference |")
+        table = docs[start:].split("\n\n", 1)[0]
+        rows = [line for line in table.splitlines() if line.startswith("|")][2:]
+        self.assertEqual(len(rows), len(comparisons))
+        for row, comparison in zip(rows, comparisons, strict=True):
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            metrics = comparison["full_frame"]
+            expected_labels = {
+                "linear_1280_to_1920_vs_fsr_sharpness_0": "Linear 1280×720→1920×1080 vs FSR sharpness 0",
+                "linear_1280_to_1920_vs_fsr_sharpness_6": "Linear 1280×720→1920×1080 vs FSR sharpness 6",
+                "linear_1280_to_1920_vs_fsr_sharpness_20": "Linear 1280×720→1920×1080 vs FSR sharpness 20",
+                "fsr_sharpness_0_vs_6": "FSR sharpness 0 vs 6",
+                "fsr_sharpness_6_vs_20": "FSR sharpness 6 vs 20",
+                "fsr6_default_layer_vs_disabled_layer": "Default LSFG-VK layer vs process-disabled",
+            }
+            with self.subTest(comparison=comparison["name"]):
+                self.assertEqual(cells[0], expected_labels[comparison["name"]])
+                self.assertEqual(int(cells[1].replace(",", "")), metrics["changed_luma_pixels"])
+                self.assertEqual(cells[2], f"{metrics['changed_luma_ratio'] * 100:.4f}%")
+                self.assertEqual(cells[3], f"{metrics['mean_absolute_luma_difference']:.4f}")
 
     def test_dispatch_text_writer_redacts_runtime_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:

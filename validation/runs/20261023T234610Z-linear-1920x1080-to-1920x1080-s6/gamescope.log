@@ -1,25 +1,25 @@
 [gamescope] [Info]  console: gamescope version 3.16.31 (gcc 16.2.1)
 No CAP_SYS_NICE, falling back to regular-priority compute and threads.
 Performance will be affected.
-[gamescope] [Info]  scriptmgr: Loading scripts from: '/usr/share/gamescope/scripts'
-[gamescope] [Info]  scriptmgr: Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope'
-[gamescope] [Info]  scriptmgr: Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope/common'
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/common/inspect.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/common/modegen.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/common/util.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Loading scripts from: '/usr/share/gamescope/scripts/00-gamescope/displays'
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/asus.rogally.lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/deckhd.steamdeck.deckhd-lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/gpd.win4.lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/lenovo.legiongo.lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/lenovo.legiongo2.oled.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/lenovo.legiongos.lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/onexplayer.f1.oled.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/valve.steamdeck.lcd.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/valve.steamdeck.oled.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Running script file '/usr/share/gamescope/scripts/00-gamescope/displays/zotac.zone.oled.lua' (id: <redacted>)
-[gamescope] [Info]  scriptmgr: Loading scripts from: '/etc/gamescope/scripts'
-[gamescope] [Warn]  scriptmgr: Directory '/etc/gamescope/scripts' does not exist
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Warn]  scriptmgr: Directory '<system-path>' does not exist
 [gamescope] [Info]  scriptmgr: Loading scripts from: '$HOME/.config/gamescope/scripts'
 [gamescope] [Warn]  scriptmgr: Directory '$HOME/.config/gamescope/scripts' does not exist
 (lsfg-vk) [ERROR]: Failed to initialize global info:

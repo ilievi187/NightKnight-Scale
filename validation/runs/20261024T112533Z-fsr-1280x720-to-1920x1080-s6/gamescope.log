@@ -1,0 +1,102 @@
+[gamescope] [Info]  console: gamescope version 3.16.31 (gcc 16.2.1)
+No CAP_SYS_NICE, falling back to regular-priority compute and threads.
+Performance will be affected.
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Running script file '<system-path>' (id: <redacted>)
+[gamescope] [Info]  scriptmgr: Loading scripts from: '<system-path>'
+[gamescope] [Warn]  scriptmgr: Directory '<system-path>' does not exist
+[gamescope] [Info]  scriptmgr: Loading scripts from: '$HOME/.config/gamescope/scripts'
+[gamescope] [Warn]  scriptmgr: Directory '$HOME/.config/gamescope/scripts' does not exist
+[gamescope] [Info]  vulkan: selecting physical device '<adapter details redacted>': queue family 1 (general queue family 0)
+[gamescope] [Info]  vulkan: physical device supports DRM format modifiers
+[gamescope] [Info]  wlserver: [backend/headless/backend.c:60] Creating headless backend
+[gamescope] [Info]  vulkan: supported DRM formats for sampling usage:
+[gamescope] [Info]  vulkan:   AR24 (<address>)
+[gamescope] [Info]  vulkan:   XR24 (<address>)
+[gamescope] [Info]  vulkan:   AB24 (<address>)
+[gamescope] [Info]  vulkan:   XB24 (<address>)
+[gamescope] [Info]  vulkan:   RG16 (<address>)
+[gamescope] [Info]  vulkan:   NV12 (<address>)
+[gamescope] [Info]  vulkan:   AB4H (<address>)
+[gamescope] [Info]  vulkan:   XB4H (<address>)
+[gamescope] [Info]  vulkan:   AB48 (<address>)
+[gamescope] [Info]  vulkan:   XB48 (<address>)
+[gamescope] [Info]  vulkan:   AB30 (<address>)
+[gamescope] [Info]  vulkan:   XB30 (<address>)
+[gamescope] [Info]  vulkan:   AR30 (<address>)
+[gamescope] [Info]  vulkan:   XR30 (<address>)
+[gamescope] [Info]  vulkan: Creating Gamescope nested swapchain with format 64 and colorspace 0
+[gamescope] [Info]  wlserver: Using explicit sync when available
+[gamescope] [Info]  wlserver: Running compositor on wayland display '<redacted>'
+[gamescope] [Info]  wlserver: [backend/headless/backend.c:17] Starting headless backend
+[gamescope] [Info]  wlserver: Successfully initialized libei for input emulation!
+[gamescope] [Info]  wlserver: [xwayland/server.c:108] Starting Xwayland on <redacted>
+The XKEYBOARD keymap compiler (xkbcomp) reports:
+> Warning:          Multiple symbols for level 1/group 1 on key <FK23>
+>                   Using F23, ignoring XF86TouchpadOff
+> Warning:          Symbol map for key <FK23> redefined
+>                   Using last definition for conflicting fields
+> Warning:          Symbol map for key <FK24> redefined
+>                   Using last definition for conflicting fields
+Errors from xkbcomp are not fatal to the X server
+[gamescope] [Info]  pipewire: stream state changed: connecting
+[gamescope] [Info]  pipewire: stream state changed: paused
+[gamescope] [Info]  pipewire: stream available on node ID: <redacted>
+[gamescope] [Info]  vblank: Using timerfd.
+[gamescope] [Info]  vulkan: Creating Gamescope nested swapchain with format 64 and colorspace 0
+[Gamescope WSI] Application info:
+  pApplicationName: wgpu
+  applicationVersion: 1
+  pEngineName: wgpu-hal
+  engineVersion: 2
+  apiVersion: 4206592
+[Gamescope WSI] Executable name: nk-scale
+[Gamescope WSI] Surface state:
+  steam app id:                  <redacted>
+  window xid:                    <redacted>
+  wayland surface res id:        <redacted>
+  layer client flags:            0x0
+  server hdr output enabled:     false
+  hdr formats exposed to client: false
+[Gamescope WSI] Forcing on VK_EXT_swapchain_maintenance1.
+[Gamescope WSI] Creating swapchain for xid: 0x0 - oldSwapchain: (nil) - provided minImageCount: 3 - minImageCount: 3 - format: VK_FORMAT_B8G8R8A8_UNORM - colorspace: VK_COLOR_SPACE_SRGB_NONLINEAR_KHR - flip: true
+[Gamescope WSI] Created swapchain for xid: 0x0 swapchain: <address> - imageCount: 3
+[Gamescope WSI] Creating swapchain for xid: 0x0 - oldSwapchain: <address> - provided minImageCount: 3 - minImageCount: 3 - format: VK_FORMAT_B8G8R8A8_UNORM - colorspace: VK_COLOR_SPACE_SRGB_NONLINEAR_KHR - flip: true
+[Gamescope WSI] Created swapchain for xid: 0x0 swapchain: <address> - imageCount: 3
+[Gamescope WSI] Destroying swapchain: <address>
+[Gamescope WSI] Destroyed swapchain: <address>
+[gamescope] [Error] wlserver: create_swapchain: Surface already had a gamescope_swapchain! Warning!
+[gamescope] [Error] xwm: NO CURSOR IMPL XDG
+[Gamescope WSI] Swapchain received new refresh cycle: 16.67ms
+[gamescope] [Info]  vulkan: Creating Gamescope nested swapchain with format 64 and colorspace 0
+The XKEYBOARD keymap compiler (xkbcomp) reports:
+> Warning:          Unsupported maximum keycode 709, clipping.
+>                   X11 cannot support keycodes above 255.
+> Warning:          Virtual modifier Hyper multiply defined
+>                   Using 0, ignoring 0
+> Warning:          Virtual modifier ScrollLock multiply defined
+>                   Using 0, ignoring 0
+Errors from xkbcomp are not fatal to the X server
+[gamescope] [Info]  vulkan: Creating Gamescope nested swapchain with format 64 and colorspace 0
+[gamescopereaper] [Info]  reaper: Parent of gamescopereaper was killed. Killing children.
+(EE) failed to read Wayland events: Broken pipe
+Io error: Connection reset by peer (os error 104)
+Io error: Connection reset by peer (os error 104)
+[Gamescope WSI] Destroying swapchain: <address>
+[Gamescope WSI] Destroyed swapchain: <address>
+[gamescope] [Info]  launch: Primary child shut down!

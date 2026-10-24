@@ -1,7 +1,6 @@
 {
   "timestamp_utc": "20261023T234637Z",
   "result": "captured",
-  "sdl_display_index": 4,
   "source_resolution_requested": {
     "width": 1920,
     "height": 1080
@@ -17,11 +16,11 @@
   "fullscreen_requested_before_placement": false,
   "fullscreen_dispatched_after_placement": true,
   "gamescope_argv": [
-    "/usr/bin/gamescope",
+    "$SYSTEM/gamescope",
     "--backend",
     "sdl",
     "--display-index",
-    "4",
+    "<redacted>",
     "--nested-width",
     "1920",
     "--nested-height",
