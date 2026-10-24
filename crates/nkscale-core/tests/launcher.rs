@@ -1,6 +1,6 @@
 use nkscale_core::{
     Filter, GameConfig, Monitor, Profile, Resolution, ScaleMode, build_gamescope_args,
-    load_profile, save_profile,
+    gamescope_environment, load_profile, resolve_display_index, save_profile,
 };
 
 fn sample_config() -> GameConfig {
@@ -97,6 +97,61 @@ fn profile_round_trip_preserves_user_settings() {
     save_profile(&path, &profile).unwrap();
     assert_eq!(load_profile(&path).unwrap(), profile);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn wayland_sdl_driver_is_used_by_gamescope_for_consistent_display_indices() {
+    assert_eq!(gamescope_environment(), [("SDL_VIDEODRIVER", "wayland")]);
+}
+
+#[test]
+fn selected_display_is_revalidated_by_stable_identity_after_reordering() {
+    let selected = Monitor {
+        index: 3,
+        name: String::new(),
+        width: 1920,
+        height: 1080,
+        refresh_hz: 60.0,
+        x: 8320,
+        y: 0,
+    };
+    let refreshed = [
+        Monitor {
+            index: 4,
+            name: String::new(),
+            width: 1920,
+            height: 1080,
+            refresh_hz: 60.0,
+            x: 10240,
+            y: 0,
+        },
+        Monitor {
+            index: 5,
+            name: String::new(),
+            width: 1920,
+            height: 1080,
+            refresh_hz: 60.0,
+            x: 8320,
+            y: 0,
+        },
+    ];
+
+    assert_eq!(resolve_display_index(&selected, &refreshed), Some(5));
+}
+
+#[test]
+fn selected_display_revalidation_fails_closed_when_output_disappears() {
+    let selected = Monitor {
+        index: 3,
+        name: String::new(),
+        width: 1920,
+        height: 1080,
+        refresh_hz: 60.0,
+        x: 8320,
+        y: 0,
+    };
+
+    assert_eq!(resolve_display_index(&selected, &[]), None);
 }
 
 #[test]

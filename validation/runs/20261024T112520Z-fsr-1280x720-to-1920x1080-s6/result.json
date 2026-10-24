@@ -1,0 +1,146 @@
+{
+  "timestamp_utc": "20261024T112520Z",
+  "result": "captured",
+  "source_resolution_requested": {
+    "width": 1280,
+    "height": 720
+  },
+  "gamescope_target_resolution_requested": {
+    "width": 1920,
+    "height": 1080
+  },
+  "filter_requested": "fsr",
+  "sharpness_requested": 6,
+  "start_timeout_seconds": 8.0,
+  "capture_delay_seconds": 1.0,
+  "fullscreen_requested_before_placement": false,
+  "fullscreen_dispatched_after_placement": true,
+  "gamescope_argv": [
+    "$SYSTEM/gamescope",
+    "--backend",
+    "sdl",
+    "--display-index",
+    "<redacted>",
+    "--nested-width",
+    "1280",
+    "--nested-height",
+    "720",
+    "--output-width",
+    "1920",
+    "--output-height",
+    "1080",
+    "--scaler",
+    "fit",
+    "--filter",
+    "fsr",
+    "--sharpness",
+    "6",
+    "--expose-wayland",
+    "--stats-path",
+    "$RUN_DIR/gamescope-stats.csv",
+    "--",
+    "$REPO/target/release/nk-scale",
+    "--test-pattern",
+    "--pattern-size=1280x720"
+  ],
+  "wayland_sdl_driver": "SDL_VIDEODRIVER=wayland",
+  "lsfgvk_disabled_for_test": false,
+  "lsfgvk_config_modified": false,
+  "window_routing": "per-process headless monitor/workspace rule; no_initial_focus=true; PID-scoped fullscreen only after placement validation",
+  "process_cleanup": "pidfd; executable and unique stats-path marker verified before signaling",
+  "software_versions": {
+    "nk_scale_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68",
+    "gamescope": "Gamescope 3.16.31 (gcc 16.2.1)"
+  },
+  "source_provenance": {
+    "worktree_clean": true,
+    "git_commit": "bf2f9900e9745a2c9148b0f70001e7fd5bff48d7",
+    "git_tree": "27feb74255e30879b1a28fab31d5889c28313e89"
+  },
+  "log": "$RUN_DIR/gamescope.log",
+  "stats_path": "$RUN_DIR/gamescope-stats.csv",
+  "capture": "$RUN_DIR/capture.png",
+  "capture_method": "grim -T on verified Gamescope foreign-toplevel; host compositor layers excluded",
+  "headless_host_output_mode_actual": {
+    "width": 1920,
+    "height": 1080
+  },
+  "focus_checkpoints": [
+    {
+      "stage": "prelaunch_before_diagnostics",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "prelaunch_after_diagnostics",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "before_fullscreen",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "fullscreen_transition",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "before_capture",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "after_cleanup",
+      "focus_monitor_unchanged": true,
+      "focused_client_unchanged": true
+    }
+  ],
+  "focused_window_unchanged": true,
+  "shader_execution_proven": false,
+  "performance_metrics": {
+    "capture_fps": null,
+    "output_fps": null,
+    "gpu_processing_time_ms": null,
+    "end_to_end_latency_ms": null,
+    "gpu_utilization_percent": null,
+    "vram_bytes": null,
+    "cpu_percent": null,
+    "dropped_frames": null,
+    "reason": "No validated per-session telemetry source was available."
+  },
+  "prelaunch_revalidation": {
+    "headless_identity_unchanged": true,
+    "sdl_index_unchanged": true,
+    "target_idle": true,
+    "focus_monitor_unchanged": true,
+    "physical_modes_unchanged": true
+  },
+  "capture_resolution_actual": {
+    "width": 1920,
+    "height": 1080
+  },
+  "gamescope_toplevel_capture_verified": true,
+  "gamescope_window": {
+    "class": "gamescope",
+    "logical_size": [
+      1536,
+      864
+    ],
+    "fullscreen_state": 2
+  },
+  "stats_file_created": false,
+  "focus_monitor_unchanged": true,
+  "physical_modes_unchanged": true,
+  "stopped_at_utc": "2026-10-24T11:25:22.763043+00:00",
+  "test_output": {
+    "class": "headless",
+    "mode": {
+      "width": 1920,
+      "height": 1080
+    },
+    "refresh_hz": 60.0,
+    "logical_scale": 1.25
+  }
+}

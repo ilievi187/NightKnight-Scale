@@ -120,6 +120,21 @@ impl Monitor {
     }
 }
 
+/// Resolve the current SDL index for a monitor selected during an earlier enumeration.
+/// SDL indices are volatile; match the stable name/position and fail closed on ambiguity.
+pub fn resolve_display_index(selected: &Monitor, current: &[Monitor]) -> Option<u32> {
+    let mut matches = current.iter().filter(|candidate| {
+        candidate.name == selected.name && candidate.x == selected.x && candidate.y == selected.y
+    });
+    let index = matches.next()?.index;
+    matches.next().is_none().then_some(index)
+}
+
+/// Keep Gamescope's SDL output enumeration on the same Wayland driver as NKScale.
+pub const fn gamescope_environment() -> [(&'static str, &'static str); 1] {
+    [("SDL_VIDEODRIVER", "wayland")]
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("source and target dimensions must be between 1 and {MAX_DIMENSION} pixels")]
@@ -229,7 +244,7 @@ mod sdl_display {
     use super::{Error, Monitor};
     use std::ffi::{CStr, c_char, c_void};
 
-    const SDL_INIT_VIDEO: u32 = 0x0000_0020;
+    const WAYLAND_VIDEO_DRIVER: &CStr = c"wayland";
 
     #[repr(C)]
     struct SdlRect {
@@ -250,8 +265,8 @@ mod sdl_display {
 
     #[link(name = "SDL2")]
     unsafe extern "C" {
-        fn SDL_InitSubSystem(flags: u32) -> i32;
-        fn SDL_QuitSubSystem(flags: u32);
+        fn SDL_VideoInit(driver_name: *const c_char) -> i32;
+        fn SDL_VideoQuit();
         fn SDL_GetNumVideoDisplays() -> i32;
         fn SDL_GetDisplayName(display_index: i32) -> *const c_char;
         fn SDL_GetCurrentDisplayMode(display_index: i32, mode: *mut SdlDisplayMode) -> i32;
@@ -262,8 +277,8 @@ mod sdl_display {
     struct VideoSubsystem;
     impl Drop for VideoSubsystem {
         fn drop(&mut self) {
-            // SAFETY: This balances the successful SDL_InitSubSystem call in `list`.
-            unsafe { SDL_QuitSubSystem(SDL_INIT_VIDEO) };
+            // SAFETY: This balances the successful SDL_VideoInit call in `list`.
+            unsafe { SDL_VideoQuit() };
         }
     }
 
@@ -280,8 +295,9 @@ mod sdl_display {
     }
 
     pub(super) fn list() -> Result<Vec<Monitor>, Error> {
-        // SAFETY: SDL's video subsystem is initialized once for this short enumeration.
-        if unsafe { SDL_InitSubSystem(SDL_INIT_VIDEO) } != 0 {
+        // Select Wayland explicitly so this index list matches Gamescope's SDL backend.
+        // SAFETY: SDL_VideoInit accepts a static NUL-terminated driver name.
+        if unsafe { SDL_VideoInit(WAYLAND_VIDEO_DRIVER.as_ptr()) } != 0 {
             return Err(Error::DisplayEnumeration(last_error()));
         }
         let _video = VideoSubsystem;

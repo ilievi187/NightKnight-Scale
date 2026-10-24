@@ -10,9 +10,11 @@ This roadmap separates working features from future research. A milestone is not
 - [x] GUI builds and launches on the target Wayland session.
 - [x] Vulkan adapter and SDL display list verified at runtime.
 - [x] Start the built-in test application via Gamescope FSR on the isolated test display; Gamescope created a WSI swapchain and supervised the child.
-- [ ] Visually capture/inspect the rendered test pattern and compare it with an unscaled reference; the headless output was occluded during the smoke test.
-- [ ] Verify source/output mode matrix where hardware supports it; no performance claims without instrumentation.
-- [x] CI green on the pushed foundation commit; limitations and repeatable demo procedure reviewed.
+- [x] Capture and inspect the deterministic test pattern from the live Gamescope window; compare native-size, linear 720p→1080p, and FSR sharpness 0/6/20 outputs.
+- [x] Exercise the requested 720p, 900p, 1440p-target, ultrawide-target, and 4K-target cases on an isolated headless output; distinguish requested targets from measured 1920×1080 host captures.
+- [x] Record pixel-difference evidence, environment/version/output metadata, process-scoped cleanup, and limitations; no unsupported performance claims.
+- [x] Run local CI-equivalent checks and push the validation branch; recheck PR #2's live CI after each follow-up commit.
+- [ ] Obtain human PR review and reconcile Issue #1's unverified high-resolution target-buffer dimensions before closing M1.
 
 Completion requires the runtime checks above. The milestone is still in progress until they pass.
 

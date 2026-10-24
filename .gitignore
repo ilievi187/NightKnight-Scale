@@ -1,5 +1,8 @@
 target/
 dist/
 *.log
+!validation/runs/**/gamescope.log
 *.tmp
+__pycache__/
+*.py[cod]
 .DS_Store

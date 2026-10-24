@@ -1,0 +1,44 @@
+{
+  "captured_at_utc": "2026-10-23T23:54:18.278368+00:00",
+  "software": {
+    "gamescope": "3.16.31",
+    "hyprland": "0.56.2",
+    "vulkan_driver": "RADV / Mesa 26.2.5",
+    "nk_scale_binary_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68"
+  },
+  "sdl_video_driver": "wayland",
+  "display_summary": {
+    "physical_output_count": 3,
+    "headless_output_count": 2,
+    "physical_connector_names_persisted": false,
+    "physical_modes_persisted": false,
+    "desktop_coordinates_persisted": false,
+    "runtime_output_ids_persisted": false
+  },
+  "test_output": {
+    "class": "headless",
+    "mode": {
+      "width": 1920,
+      "height": 1080
+    },
+    "refresh_hz": 60.0,
+    "logical_scale": 1.25,
+    "workspace_or_connector_identity_persisted": false
+  },
+  "capture_method": "grim -T on verified Gamescope foreign-toplevel; stable handle used in memory and excluded from evidence",
+  "matrix_run_counts": {
+    "attempts": 11,
+    "captured": 10,
+    "failed": 1,
+    "unique_cases": 10,
+    "source_provenance": "historical captures recorded a dirty worktree; exact source tree not recorded"
+  },
+  "physical_modes_unchanged_in_all_records": true,
+  "notes": [
+    "Physical outputs were never targeted; connector names, physical modes, positions, and focus target names are not persisted.",
+    "The test used a separate idle headless output; the output with a pre-existing window was left untouched.",
+    "Process PIDs, monitor/workspace IDs, Wayland/Xwayland display IDs, PipeWire node IDs, and memory addresses are redacted.",
+    "All committed PNG captures are 1920x1080; 1440p, ultrawide, and 4K are requested Gamescope targets only.",
+    "Shader dispatch and performance metrics remain unverified."
+  ]
+}

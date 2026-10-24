@@ -1,0 +1,143 @@
+{
+  "method": "Pillow ImageChops.difference; RGB difference converted to luma; changed luma pixels and mean absolute full-frame differences are reported. No ROI measurements, performance claims, or shader-dispatch claims are made.",
+  "software_binary_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68",
+  "capture_dimensions": [
+    1920,
+    1080
+  ],
+  "attempt_count": 21,
+  "captured_count": 20,
+  "failed_count": 1,
+  "source_provenance": {
+    "clean_capture_commit": "bf2f9900e9745a2c9148b0f70001e7fd5bff48d7",
+    "clean_capture_tree": "27feb74255e30879b1a28fab31d5889c28313e89",
+    "clean_capture_worktree_clean": true,
+    "retained_historical_failure_commit": "4a3a3dd",
+    "retained_historical_failure_worktree_clean": false,
+    "retained_historical_failure_tree_recorded": false,
+    "preserved_historical_capture_count": 10,
+    "preserved_historical_capture_worktree_clean": false
+  },
+  "comparisons": [
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_0",
+      "image_a": "validation/runs/20261024T112516Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261024T112518Z-fsr-1280x720-to-1920x1080-s0/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 652740,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.31478588,
+        "mean_absolute_luma_difference": 4.83938368,
+        "mean_absolute_rgb_difference": [
+          4.54589169,
+          4.93732832,
+          5.04651765
+        ]
+      }
+    },
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_6",
+      "image_a": "validation/runs/20261024T112516Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261024T112520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 631754,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.30466532,
+        "mean_absolute_luma_difference": 4.44418065,
+        "mean_absolute_rgb_difference": [
+          4.17785446,
+          4.54344329,
+          4.65957031
+        ]
+      }
+    },
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_20",
+      "image_a": "validation/runs/20261024T112516Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261024T112523Z-fsr-1280x720-to-1920x1080-s20/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 421627,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.20333092,
+        "mean_absolute_luma_difference": 4.11289207,
+        "mean_absolute_rgb_difference": [
+          3.85049045,
+          4.19899691,
+          4.30723331
+        ]
+      }
+    },
+    {
+      "name": "fsr_sharpness_0_vs_6",
+      "image_a": "validation/runs/20261024T112518Z-fsr-1280x720-to-1920x1080-s0/capture.png",
+      "image_b": "validation/runs/20261024T112520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 327182,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.15778453,
+        "mean_absolute_luma_difference": 0.43599489,
+        "mean_absolute_rgb_difference": [
+          0.41186632,
+          0.45078221,
+          0.44991705
+        ]
+      }
+    },
+    {
+      "name": "fsr_sharpness_6_vs_20",
+      "image_a": "validation/runs/20261024T112520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261024T112523Z-fsr-1280x720-to-1920x1080-s20/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 466441,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.22494261,
+        "mean_absolute_luma_difference": 0.42168113,
+        "mean_absolute_rgb_difference": [
+          0.39981771,
+          0.42966532,
+          0.43391397
+        ]
+      }
+    },
+    {
+      "name": "fsr6_default_layer_vs_disabled_layer",
+      "image_a": "validation/runs/20261024T112520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261024T112533Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 225,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.00010851,
+        "mean_absolute_luma_difference": 0.00010851,
+        "mean_absolute_rgb_difference": [
+          0.0001032,
+          0.00010851,
+          9.259e-05
+        ]
+      }
+    }
+  ]
+}
