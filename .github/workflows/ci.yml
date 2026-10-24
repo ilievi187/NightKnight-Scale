@@ -29,3 +29,5 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
         run: cargo test --workspace
+      - name: Test headless validation safety and argument planning
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'

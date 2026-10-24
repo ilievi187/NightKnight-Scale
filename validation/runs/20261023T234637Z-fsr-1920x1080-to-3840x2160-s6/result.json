@@ -1,0 +1,153 @@
+{
+  "timestamp_utc": "20261023T234637Z",
+  "result": "captured",
+  "monitor": {
+    "name": "HEADLESS-3",
+    "id": 4,
+    "x": 10240,
+    "y": 0,
+    "width": 1920,
+    "height": 1080,
+    "refreshRate": 60.0,
+    "scale": 1.25
+  },
+  "workspace_id": 3,
+  "sdl_display_index": 4,
+  "source_resolution_requested": {
+    "width": 1920,
+    "height": 1080
+  },
+  "gamescope_target_resolution_requested": {
+    "width": 3840,
+    "height": 2160
+  },
+  "filter_requested": "fsr",
+  "sharpness_requested": 6,
+  "start_timeout_seconds": 20.0,
+  "capture_delay_seconds": 1.0,
+  "fullscreen_requested_before_placement": false,
+  "fullscreen_dispatched_after_placement": true,
+  "gamescope_argv": [
+    "/usr/bin/gamescope",
+    "--backend",
+    "sdl",
+    "--display-index",
+    "4",
+    "--nested-width",
+    "1920",
+    "--nested-height",
+    "1080",
+    "--output-width",
+    "3840",
+    "--output-height",
+    "2160",
+    "--scaler",
+    "fit",
+    "--filter",
+    "fsr",
+    "--sharpness",
+    "6",
+    "--expose-wayland",
+    "--stats-path",
+    "$RUN_DIR/gamescope-stats.csv",
+    "--",
+    "$REPO/target/release/nk-scale",
+    "--test-pattern",
+    "--pattern-size=1920x1080"
+  ],
+  "wayland_sdl_driver": "SDL_VIDEODRIVER=wayland",
+  "lsfgvk_disabled_for_test": false,
+  "lsfgvk_config_modified": false,
+  "window_routing": "per-process headless monitor/workspace rule; no_initial_focus=true; PID-scoped fullscreen only after placement validation",
+  "process_cleanup": "pidfd; executable and unique stats-path marker verified before signaling",
+  "software_versions": {
+    "nk_scale_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68",
+    "gamescope": "Gamescope 3.16.31 (gcc 16.2.1)",
+    "hyprland": "Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs).",
+    "kernel": "7.2.8-9-omarchy",
+    "gpu_diagnostic": "GPU: Vulkan adapter: AMD Radeon RX 7900 XT (RADV NAVI31) \u00b7 DiscreteGpu \u00b7 Mesa 26.2.5-arch1.1",
+    "git_commit": "4a3a3dd",
+    "git_dirty": true
+  },
+  "log": "$RUN_DIR/gamescope.log",
+  "stats_path": "$RUN_DIR/gamescope-stats.csv",
+  "capture": "$RUN_DIR/capture.png",
+  "capture_method": "grim -T on verified Gamescope foreign-toplevel; host compositor layers excluded",
+  "headless_host_output_mode_actual": {
+    "width": 1920,
+    "height": 1080
+  },
+  "focus_checkpoints": [
+    {
+      "stage": "prelaunch_before_diagnostics",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "prelaunch_after_diagnostics",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "before_fullscreen",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "fullscreen_transition",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "before_capture",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    },
+    {
+      "stage": "after_cleanup",
+      "focused_monitor": "DP-1",
+      "focused_client_unchanged": true
+    }
+  ],
+  "focused_window_unchanged": true,
+  "shader_execution_proven": false,
+  "performance_metrics": {
+    "capture_fps": null,
+    "output_fps": null,
+    "gpu_processing_time_ms": null,
+    "end_to_end_latency_ms": null,
+    "gpu_utilization_percent": null,
+    "vram_bytes": null,
+    "cpu_percent": null,
+    "dropped_frames": null,
+    "reason": "No validated per-session telemetry source was available."
+  },
+  "prelaunch_revalidation": {
+    "headless_identity_unchanged": true,
+    "sdl_index_unchanged": true,
+    "target_idle": true,
+    "focus_monitor_unchanged": true,
+    "physical_modes_unchanged": true
+  },
+  "capture_resolution_actual": {
+    "width": 1920,
+    "height": 1080
+  },
+  "gamescope_toplevel_capture_verified": true,
+  "gamescope_window": {
+    "pid": 2387736,
+    "class": "gamescope",
+    "monitor_id": 4,
+    "workspace_id": 3,
+    "logical_size": [
+      1536,
+      864
+    ],
+    "fullscreen_state": 2
+  },
+  "stats_file_created": false,
+  "focused_monitor_before": "DP-1",
+  "focused_monitor_after": "DP-1",
+  "physical_modes_unchanged": true,
+  "stopped_at_utc": "2026-10-23T23:46:39.738151+00:00"
+}

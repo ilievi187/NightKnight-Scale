@@ -4,7 +4,7 @@ Linux-first GPU scaling control application. The first usable path delegates gam
 
 ## Current state
 
-This is an early, working-foundation prototype. The Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and built-in test pattern are implemented locally. The M1 visual FSR-output proof and remote CI result are still open; native Vulkan shader processing and portal-authorized capture remain later milestones.
+This is an early working prototype. The Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are implemented. The Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified. Native Vulkan processing and portal-authorized capture are later milestones.
 
 Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). Do not interpret the aspirational roadmap as shipped functionality.
 
@@ -23,13 +23,36 @@ Select a display, leave the default FSR 1.0 filter selected, choose source/outpu
 You can also run the backend directly:
 
 ```sh
-gamescope --backend sdl --display-index 0 \
+# Re-enumerate first; never reuse an SDL index after display changes.
+: "${SDL_DISPLAY_INDEX:?Set from fresh nk-scale --diagnostics output}"
+gamescope --backend sdl --display-index "$SDL_DISPLAY_INDEX" \
   --nested-width 1280 --nested-height 720 \
   --output-width 1920 --output-height 1080 \
   --scaler fit --filter fsr --sharpness 6 \
   --fullscreen --expose-wayland -- \
   ./target/release/nk-scale --test-pattern
 ```
+
+## Headless visual validation
+
+For isolated tests, use the safety-checked harness rather than a hard-coded SDL index:
+
+```sh
+cargo build --release -p nkscale-ui
+python scripts/headless_fsr_validation.py \
+  --monitor HEADLESS-N --filter fsr \
+  --source 1280x720 --target 1920x1080 --sharpness 6
+```
+
+The harness verifies that the named output has headless-only identity metadata,
+revalidates its geometry and SDL index immediately before launch, refuses occupied
+outputs, and maps Gamescope windowed with `no_initial_focus`. It requests
+fullscreen only after the process/window is verified on the target. Focus/client
+identity is sampled at checkpoints but not continuously. It captures only the
+test output and cleans up the matching Gamescope process through a pidfd. It
+expects an idle Hyprland `HEADLESS-*` output; it deliberately does not create or
+remove outputs. See [`validation/README.md`](validation/README.md) for the matrix
+and limitations.
 
 Check `gamescope --help` on your installation before using flags from examples; the application detects the installed version but does not install or replace it.
 

@@ -1,7 +1,7 @@
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, Stroke, Vec2};
 use nkscale_core::{
     Filter, GameConfig, Monitor, Profile, Resolution, ScaleMode, build_gamescope_args,
-    list_displays, load_profile, save_profile,
+    gamescope_environment, list_displays, load_profile, resolve_display_index, save_profile,
 };
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -127,17 +127,51 @@ impl ScaleApp {
             self.status = format!("Cannot launch: {}", self.gamescope_status);
             return;
         }
-        if !self
+        let Some(selected_monitor) = self
             .monitors
             .iter()
-            .any(|monitor| monitor.index == self.config.display_index)
-        {
+            .find(|monitor| monitor.index == self.config.display_index)
+            .cloned()
+        else {
             self.status = self
                 .monitor_error
                 .clone()
                 .unwrap_or_else(|| "Select an available output display first.".into());
             return;
+        };
+        let refreshed_monitors = match list_displays() {
+            Ok(monitors) => monitors,
+            Err(error) => {
+                self.status = format!("Cannot revalidate the selected Wayland display: {error}");
+                return;
+            }
+        };
+        let Some(display_index) = resolve_display_index(&selected_monitor, &refreshed_monitors)
+        else {
+            self.monitors = refreshed_monitors;
+            self.monitor_error = Some(
+                "The selected display disappeared or has an ambiguous identity; select it again."
+                    .into(),
+            );
+            self.status = self.monitor_error.clone().unwrap_or_default();
+            return;
+        };
+        if self.config.target
+            == (Resolution {
+                width: selected_monitor.width,
+                height: selected_monitor.height,
+            })
+            && let Some(current_monitor) = refreshed_monitors
+                .iter()
+                .find(|monitor| monitor.index == display_index)
+        {
+            self.config.target = Resolution {
+                width: current_monitor.width,
+                height: current_monitor.height,
+            };
         }
+        self.monitors = refreshed_monitors;
+        self.config.display_index = display_index;
         let args = match build_gamescope_args(&self.config) {
             Ok(args) => args,
             Err(error) => {
@@ -148,6 +182,7 @@ impl ScaleApp {
         let mut command = Command::new("gamescope");
         command
             .args(args)
+            .envs(gamescope_environment())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -567,7 +602,14 @@ fn main() -> eframe::Result {
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--test-pattern") {
-        return run_test_pattern();
+        let resolution = match parse_test_pattern_resolution(&args) {
+            Ok(resolution) => resolution,
+            Err(error) => {
+                eprintln!("Invalid test-pattern size: {error}");
+                std::process::exit(2);
+            }
+        };
+        return run_test_pattern(resolution);
     }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
@@ -584,101 +626,321 @@ fn main() -> eframe::Result {
     )
 }
 
-fn run_test_pattern() -> eframe::Result {
+fn parse_test_pattern_resolution(args: &[String]) -> Result<Resolution, String> {
+    let Some(size) = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix("--pattern-size="))
+    else {
+        return Ok(Resolution {
+            width: 1280,
+            height: 720,
+        });
+    };
+    let (width, height) = size
+        .split_once('x')
+        .ok_or_else(|| "expected WIDTHxHEIGHT, for example 1280x720".to_owned())?;
+    let width = width
+        .parse::<u32>()
+        .map_err(|_| "width must be an integer between 1 and 16384".to_owned())?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|_| "height must be an integer between 1 and 16384".to_owned())?;
+    if !(1..=16_384).contains(&width) || !(1..=16_384).contains(&height) {
+        return Err("dimensions must be between 1 and 16384 pixels".into());
+    }
+    Ok(Resolution { width, height })
+}
+
+fn run_test_pattern(resolution: Resolution) -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("NightKnight Scale · Test Pattern")
-            .with_inner_size([1280.0, 720.0])
+            .with_inner_size([resolution.width as f32, resolution.height as f32])
             .with_min_inner_size([640.0, 360.0]),
         ..Default::default()
     };
     eframe::run_native(
         "NK Scale Test Pattern",
         options,
-        Box::new(|_| Ok(Box::new(TestPattern))),
+        Box::new(|_| Ok(Box::new(TestPattern { resolution }))),
     )
 }
 
-struct TestPattern;
+struct TestPattern {
+    resolution: Resolution,
+}
 
 impl eframe::App for TestPattern {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Frame::new().fill(Color32::BLACK).show(ui, |ui| {
-            let rect = ui.max_rect();
-            let painter = ui.painter();
-            let cell = (rect.width() / 40.0).max(8.0);
-            let rows = (rect.height() / cell).ceil() as usize;
-            let cols = (rect.width() / cell).ceil() as usize;
-            for row in 0..rows {
-                for col in 0..cols {
-                    if (row + col) % 2 == 0 {
-                        let x = rect.left() + col as f32 * cell;
-                        let y = rect.top() + row as f32 * cell;
-                        let shade = if (row + col) % 4 == 0 { 45 } else { 26 };
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(egui::pos2(x, y), Vec2::splat(cell)),
-                            egui::CornerRadius::ZERO,
-                            Color32::from_gray(shade),
-                        );
-                    }
-                }
-            }
-            let center = rect.center();
-            painter.line_segment(
-                [
-                    egui::pos2(rect.left(), center.y),
-                    egui::pos2(rect.right(), center.y),
-                ],
-                Stroke::new(1.0, CYAN),
+        draw_pattern_chart(ui.painter(), ui.max_rect(), self.resolution);
+    }
+}
+
+fn draw_pattern_chart(painter: &egui::Painter, root: egui::Rect, source: Resolution) {
+    let root = root.shrink(14.0);
+    painter.rect_filled(root, egui::CornerRadius::ZERO, BG);
+    painter.text(
+        egui::pos2(root.left() + 4.0, root.top() + 2.0),
+        egui::Align2::LEFT_TOP,
+        "NK SCALE · DETERMINISTIC SPATIAL-SCALER CHART",
+        FontId::proportional(20.0),
+        CYAN,
+    );
+    painter.text(
+        egui::pos2(root.right() - 4.0, root.top() + 5.0),
+        egui::Align2::RIGHT_TOP,
+        format!("SOURCE {}×{}", source.width, source.height),
+        FontId::monospace(12.0),
+        TEXT,
+    );
+
+    let gap = 10.0;
+    let chart_top = root.top() + 32.0;
+    let col_width = (root.width() - gap) / 2.0;
+    let row_height = (root.bottom() - chart_top - gap * 2.0) / 3.0;
+    let panels = [
+        egui::Rect::from_min_size(
+            egui::pos2(root.left(), chart_top),
+            Vec2::new(col_width, row_height),
+        ),
+        egui::Rect::from_min_size(
+            egui::pos2(root.left() + col_width + gap, chart_top),
+            Vec2::new(col_width, row_height),
+        ),
+        egui::Rect::from_min_size(
+            egui::pos2(root.left(), chart_top + row_height + gap),
+            Vec2::new(col_width, row_height),
+        ),
+        egui::Rect::from_min_size(
+            egui::pos2(root.left() + col_width + gap, chart_top + row_height + gap),
+            Vec2::new(col_width, row_height),
+        ),
+        egui::Rect::from_min_size(
+            egui::pos2(root.left(), chart_top + (row_height + gap) * 2.0),
+            Vec2::new(col_width, row_height),
+        ),
+        egui::Rect::from_min_size(
+            egui::pos2(
+                root.left() + col_width + gap,
+                chart_top + (row_height + gap) * 2.0,
+            ),
+            Vec2::new(col_width, row_height),
+        ),
+    ];
+    let content = [
+        pattern_panel(painter, panels[0], "A · CHECKERBOARD / 1–8 PX EDGES"),
+        pattern_panel(painter, panels[1], "B · FINE TEXT / GLYPH DETAIL"),
+        pattern_panel(painter, panels[2], "C · DIAGONALS / HIGH-CONTRAST EDGES"),
+        pattern_panel(painter, panels[3], "D · DETERMINISTIC TEXTURE"),
+        pattern_panel(painter, panels[4], "E · SMALL UI ELEMENTS"),
+        pattern_panel(painter, panels[5], "F · COLOR BARS / GRAY RAMP"),
+    ];
+
+    let checker_area = egui::Rect::from_min_max(
+        content[0].min,
+        egui::pos2(
+            content[0].left() + content[0].width() * 0.58,
+            content[0].bottom(),
+        ),
+    );
+    draw_checkerboard(painter, checker_area, 8.0);
+    let high_frequency = egui::Rect::from_min_size(
+        egui::pos2(content[0].right() - 100.0, content[0].top()),
+        Vec2::new(96.0, 96.0),
+    );
+    draw_checkerboard(painter, high_frequency, 3.0);
+    for (index, width) in [1.0, 2.0, 3.0, 4.0, 6.0].into_iter().enumerate() {
+        let x = content[0].left() + content[0].width() * 0.63 + index as f32 * 18.0;
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x, content[0].top()),
+                egui::pos2(x + width, content[0].bottom()),
+            ),
+            egui::CornerRadius::ZERO,
+            TEXT,
+        );
+    }
+
+    for (index, size) in [8.0, 9.0, 10.0, 12.0, 14.0, 18.0].into_iter().enumerate() {
+        painter.text(
+            egui::pos2(content[1].left(), content[1].top() + index as f32 * 21.0),
+            egui::Align2::LEFT_TOP,
+            format!("{size:>2.0}px  Sphinx of black quartz · 0123456789"),
+            FontId::monospace(size),
+            if index % 2 == 0 { TEXT } else { CYAN },
+        );
+    }
+
+    for index in 0..18 {
+        let x = content[2].left() + index as f32 * content[2].width() / 18.0;
+        let end_x = (x + content[2].height()).min(content[2].right());
+        painter.line_segment(
+            [
+                egui::pos2(x, content[2].bottom()),
+                egui::pos2(end_x, content[2].top()),
+            ],
+            Stroke::new(if index % 3 == 0 { 2.0 } else { 1.0 }, TEXT),
+        );
+        let y = content[2].top() + index as f32 * content[2].height() / 18.0;
+        painter.line_segment(
+            [
+                egui::pos2(content[2].left(), y),
+                egui::pos2(content[2].right(), y),
+            ],
+            Stroke::new(1.0, if index % 2 == 0 { VIOLET } else { CYAN }),
+        );
+    }
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(content[2].left() + 10.0, content[2].top() + 10.0),
+            egui::pos2(content[2].left() + 110.0, content[2].top() + 62.0),
+        ),
+        egui::CornerRadius::ZERO,
+        Color32::BLACK,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(content[2].left() + 110.0, content[2].top() + 10.0),
+            egui::pos2(content[2].left() + 210.0, content[2].top() + 62.0),
+        ),
+        egui::CornerRadius::ZERO,
+        Color32::WHITE,
+    );
+
+    let texture_cell = 10.0;
+    let rows = (content[3].height() / texture_cell).floor() as usize;
+    let cols = (content[3].width() / texture_cell).floor() as usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let seed = (row as u32)
+                .wrapping_mul(73)
+                .wrapping_add((col as u32).wrapping_mul(151))
+                .wrapping_add((row as u32).wrapping_mul(col as u32).wrapping_mul(17));
+            let shade = (seed % 192 + 32) as u8;
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(
+                    content[3].left() + col as f32 * texture_cell,
+                    content[3].top() + row as f32 * texture_cell,
+                ),
+                Vec2::splat(texture_cell - 1.0),
             );
-            painter.line_segment(
-                [
-                    egui::pos2(center.x, rect.top()),
-                    egui::pos2(center.x, rect.bottom()),
-                ],
-                Stroke::new(1.0, VIOLET),
-            );
-            for index in 1..=16 {
-                let t = index as f32 / 17.0;
-                let x = rect.left() + rect.width() * t;
-                let y = rect.top() + rect.height() * t;
-                painter.line_segment(
-                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.top() + 12.0)],
-                    Stroke::new(1.0, TEXT),
-                );
-                painter.line_segment(
-                    [
-                        egui::pos2(rect.left(), y),
-                        egui::pos2(rect.left() + 12.0, y),
-                    ],
-                    Stroke::new(1.0, TEXT),
-                );
-            }
-            painter.circle_stroke(
-                center,
-                rect.height().min(rect.width()) * 0.22,
-                Stroke::new(2.0, CYAN),
+            painter.rect_filled(cell, egui::CornerRadius::ZERO, Color32::from_gray(shade));
+        }
+    }
+
+    for row in 0..2 {
+        for col in 0..3 {
+            let x = content[4].left() + col as f32 * 138.0;
+            let y = content[4].top() + row as f32 * 58.0;
+            let card = egui::Rect::from_min_size(egui::pos2(x, y), Vec2::new(126.0, 46.0));
+            painter.rect_filled(card, egui::CornerRadius::same(4), PANEL_ALT);
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(x + 8.0, y + 8.0), Vec2::new(10.0, 10.0)),
+                egui::CornerRadius::same(2),
+                if (row + col) % 2 == 0 { CYAN } else { VIOLET },
             );
             painter.text(
-                egui::pos2(rect.left() + 24.0, rect.top() + 24.0),
+                egui::pos2(x + 25.0, y + 6.0),
                 egui::Align2::LEFT_TOP,
-                "NK SCALE · SPATIAL UPSCALING TEST",
-                FontId::proportional(22.0),
+                "UI 0123",
+                FontId::monospace(11.0),
                 TEXT,
             );
-            painter.text(
-                egui::pos2(rect.left() + 24.0, rect.bottom() - 28.0),
-                egui::Align2::LEFT_BOTTOM,
-                format!(
-                    "{} × {} · fine grid · crosshair · circle",
-                    rect.width() as u32,
-                    rect.height() as u32
-                ),
-                FontId::proportional(15.0),
-                MUTED,
+            painter.line_segment(
+                [
+                    egui::pos2(x + 8.0, y + 32.0),
+                    egui::pos2(x + 116.0, y + 32.0),
+                ],
+                Stroke::new(2.0, MUTED),
             );
-        });
+            painter.circle_filled(egui::pos2(x + 72.0, y + 32.0), 4.0, CYAN);
+        }
+    }
+
+    let color_area = egui::Rect::from_min_max(
+        egui::pos2(
+            content[5].left(),
+            content[5].top() + content[5].height() * 0.34,
+        ),
+        content[5].right_bottom(),
+    );
+    let gray_steps = 16;
+    let gray_width = content[5].width() / gray_steps as f32;
+    for index in 0..gray_steps {
+        let shade = (index * 255 / (gray_steps - 1)) as u8;
+        let ramp = egui::Rect::from_min_size(
+            egui::pos2(
+                content[5].left() + index as f32 * gray_width,
+                content[5].top(),
+            ),
+            Vec2::new(gray_width - 1.0, content[5].height() * 0.30),
+        );
+        painter.rect_filled(ramp, egui::CornerRadius::ZERO, Color32::from_gray(shade));
+    }
+    let bars = [
+        Color32::BLACK,
+        Color32::WHITE,
+        Color32::from_rgb(255, 0, 0),
+        Color32::from_rgb(0, 255, 0),
+        Color32::from_rgb(0, 0, 255),
+        CYAN,
+        VIOLET,
+        Color32::from_rgb(255, 150, 40),
+    ];
+    let bar_width = color_area.width() / bars.len() as f32;
+    for (index, color) in bars.into_iter().enumerate() {
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(
+                color_area.left() + index as f32 * bar_width,
+                color_area.top(),
+            ),
+            Vec2::new(bar_width - 2.0, color_area.height()),
+        );
+        painter.rect_filled(bar, egui::CornerRadius::ZERO, color);
+    }
+}
+
+fn pattern_panel(painter: &egui::Painter, rect: egui::Rect, title: &str) -> egui::Rect {
+    painter.rect_filled(rect, egui::CornerRadius::same(4), PANEL);
+    painter.line_segment(
+        [rect.left_top(), rect.right_top()],
+        Stroke::new(1.0, Color32::from_rgb(55, 85, 112)),
+    );
+    painter.text(
+        egui::pos2(rect.left() + 8.0, rect.top() + 5.0),
+        egui::Align2::LEFT_TOP,
+        title,
+        FontId::monospace(10.0),
+        MUTED,
+    );
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left() + 8.0, rect.top() + 24.0),
+        egui::pos2(rect.right() - 8.0, rect.bottom() - 8.0),
+    )
+}
+
+fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell_size: f32) {
+    let rows = (rect.height() / cell_size).ceil() as usize;
+    let cols = (rect.width() / cell_size).ceil() as usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = rect.left() + col as f32 * cell_size;
+            let y = rect.top() + row as f32 * cell_size;
+            let cell = egui::Rect::from_min_max(
+                egui::pos2(x, y),
+                egui::pos2(
+                    (x + cell_size).min(rect.right()),
+                    (y + cell_size).min(rect.bottom()),
+                ),
+            );
+            let color = if (row + col) % 2 == 0 {
+                Color32::WHITE
+            } else {
+                Color32::BLACK
+            };
+            painter.rect_filled(cell, egui::CornerRadius::ZERO, color);
+        }
     }
 }
 
@@ -912,7 +1174,38 @@ fn scale_label(mode: ScaleMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_gamescope_label, compact_gpu_label};
+    use super::{compact_gamescope_label, compact_gpu_label, parse_test_pattern_resolution};
+    use nkscale_core::Resolution;
+
+    #[test]
+    fn test_pattern_size_defaults_to_1280_by_720() {
+        assert_eq!(
+            parse_test_pattern_resolution(&[]),
+            Ok(Resolution {
+                width: 1280,
+                height: 720,
+            })
+        );
+    }
+
+    #[test]
+    fn test_pattern_size_accepts_an_explicit_cli_override() {
+        let args = vec!["--pattern-size=1600x900".to_owned()];
+        assert_eq!(
+            parse_test_pattern_resolution(&args),
+            Ok(Resolution {
+                width: 1600,
+                height: 900,
+            })
+        );
+    }
+
+    #[test]
+    fn test_pattern_size_rejects_malformed_or_out_of_range_values() {
+        for value in ["--pattern-size=0x900", "--pattern-size=1600xnope"] {
+            assert!(parse_test_pattern_resolution(&[value.to_owned()]).is_err());
+        }
+    }
 
     #[test]
     fn status_chips_keep_the_version_and_gpu_model_without_driver_detail() {

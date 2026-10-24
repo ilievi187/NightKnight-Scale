@@ -1,0 +1,312 @@
+{
+  "method": "Pillow ImageChops.difference; RGB difference converted to luma; counts nonzero luma pixels and computes mean absolute differences. Images were captured from the verified Gamescope foreign toplevel with grim -T, excluding host compositor layers. These are pixel-difference diagnostics, not FPS or performance measurements.",
+  "software_binary_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68",
+  "capture_dimensions": [
+    1920,
+    1080
+  ],
+  "attempt_count": 11,
+  "captured_count": 10,
+  "comparisons": [
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_0",
+      "image_a": "validation/runs/20261023T234603Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261023T234550Z-fsr-1280x720-to-1920x1080-s0/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 652738,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.31478492,
+        "mean_absolute_luma_difference": 4.83933111,
+        "mean_absolute_rgb_difference": [
+          4.54584539,
+          4.93727575,
+          5.04649595
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 90037,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 0.55923602,
+        "mean_absolute_luma_difference": 14.93731056,
+        "mean_absolute_rgb_difference": [
+          14.81286957,
+          14.97777019,
+          15.01403727
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 179510,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.59049342,
+        "mean_absolute_luma_difference": 6.92073684,
+        "mean_absolute_rgb_difference": [
+          7.45270066,
+          6.85925329,
+          5.94037171
+        ]
+      }
+    },
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_6",
+      "image_a": "validation/runs/20261023T234603Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261023T234520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 631754,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.30466532,
+        "mean_absolute_luma_difference": 4.44418065,
+        "mean_absolute_rgb_difference": [
+          4.17785446,
+          4.54344329,
+          4.65957031
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 89510,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 0.55596273,
+        "mean_absolute_luma_difference": 14.35319255,
+        "mean_absolute_rgb_difference": [
+          14.24593789,
+          14.39044099,
+          14.41574534
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 172841,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.56855592,
+        "mean_absolute_luma_difference": 5.80974013,
+        "mean_absolute_rgb_difference": [
+          6.23403618,
+          5.748,
+          5.00353618
+        ]
+      }
+    },
+    {
+      "name": "linear_1280_to_1920_vs_fsr_sharpness_20",
+      "image_a": "validation/runs/20261023T234603Z-linear-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261023T234557Z-fsr-1280x720-to-1920x1080-s20/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 421627,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.20333092,
+        "mean_absolute_luma_difference": 4.11289207,
+        "mean_absolute_rgb_difference": [
+          3.85049045,
+          4.19899691,
+          4.30723331
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 61089,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 0.37943478,
+        "mean_absolute_luma_difference": 13.67741615,
+        "mean_absolute_rgb_difference": [
+          13.57598758,
+          13.71273292,
+          13.72430435
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 121150,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.39851974,
+        "mean_absolute_luma_difference": 5.02934211,
+        "mean_absolute_rgb_difference": [
+          5.39634539,
+          4.96447697,
+          4.31494408
+        ]
+      }
+    },
+    {
+      "name": "fsr_sharpness_0_vs_6",
+      "image_a": "validation/runs/20261023T234550Z-fsr-1280x720-to-1920x1080-s0/capture.png",
+      "image_b": "validation/runs/20261023T234520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 327166,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.15777681,
+        "mean_absolute_luma_difference": 0.43592785,
+        "mean_absolute_rgb_difference": [
+          0.41181906,
+          0.45071711,
+          0.4498722
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 11410,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 0.07086957,
+        "mean_absolute_luma_difference": 0.59483851,
+        "mean_absolute_rgb_difference": [
+          0.57614907,
+          0.59959006,
+          0.61449068
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 123363,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.40579934,
+        "mean_absolute_luma_difference": 1.25269408,
+        "mean_absolute_rgb_difference": [
+          1.37021711,
+          1.25221382,
+          1.06704605
+        ]
+      }
+    },
+    {
+      "name": "fsr_sharpness_6_vs_20",
+      "image_a": "validation/runs/20261023T234520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261023T234557Z-fsr-1280x720-to-1920x1080-s20/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 466441,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.22494261,
+        "mean_absolute_luma_difference": 0.42168113,
+        "mean_absolute_rgb_difference": [
+          0.39981771,
+          0.42966532,
+          0.43391397
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 37627,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 0.23370807,
+        "mean_absolute_luma_difference": 0.6997764,
+        "mean_absolute_rgb_difference": [
+          0.68659627,
+          0.7007764,
+          0.71935404
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 149322,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.49119079,
+        "mean_absolute_luma_difference": 1.003125,
+        "mean_absolute_rgb_difference": [
+          1.07938158,
+          1.00434539,
+          0.86659211
+        ]
+      }
+    },
+    {
+      "name": "fsr6_default_layer_vs_disabled_layer",
+      "image_a": "validation/runs/20261023T234520Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "image_b": "validation/runs/20261023T234543Z-fsr-1280x720-to-1920x1080-s6/capture.png",
+      "full_frame": {
+        "dimensions": [
+          1920,
+          1080
+        ],
+        "changed_luma_pixels": 225,
+        "total_pixels": 2073600,
+        "changed_luma_ratio": 0.00010851,
+        "mean_absolute_luma_difference": 0.00010851,
+        "mean_absolute_rgb_difference": [
+          0.0001032,
+          0.00010851,
+          9.259e-05
+        ]
+      },
+      "checkerboard_and_edge_roi": {
+        "dimensions": [
+          460,
+          350
+        ],
+        "changed_luma_pixels": 1,
+        "total_pixels": 161000,
+        "changed_luma_ratio": 6.21e-06,
+        "mean_absolute_luma_difference": 6.21e-06,
+        "mean_absolute_rgb_difference": [
+          3.727e-05,
+          6.21e-06,
+          3.727e-05
+        ]
+      },
+      "texture_roi": {
+        "dimensions": [
+          950,
+          320
+        ],
+        "changed_luma_pixels": 141,
+        "total_pixels": 304000,
+        "changed_luma_ratio": 0.00046382,
+        "mean_absolute_luma_difference": 0.00046382,
+        "mean_absolute_rgb_difference": [
+          0.00030263,
+          0.00046382,
+          0.00024342
+        ]
+      }
+    }
+  ]
+}

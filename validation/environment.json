@@ -1,0 +1,151 @@
+{
+  "captured_at_utc": "2026-10-23T23:54:18.278368+00:00",
+  "software": {
+    "gamescope": "Gamescope 3.16.31 (gcc 16.2.1)",
+    "vulkan_adapter": "Vulkan adapter: AMD Radeon RX 7900 XT (RADV NAVI31) \u00b7 DiscreteGpu \u00b7 Mesa 26.2.5-arch1.1",
+    "hyprland": "Hyprland 0.56.2 built from branch v0.56.2 at commit efb50993780079460b0cbed1363e2166a2de1d9f clean ([gha] Nix: update inputs).",
+    "kernel": "7.2.8-9-omarchy",
+    "nk_scale_binary_sha256": "ce9af7d06886a25ff841464d28caa3626ec6908cce14f6cb2f7fb0875104cd68"
+  },
+  "sdl_video_driver": "wayland",
+  "sdl_displays": [
+    {
+      "index": 0,
+      "name": "HDMI-A-1",
+      "width": 3840,
+      "height": 2160,
+      "refresh_hz": 60.0,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "index": 1,
+      "name": "DP-1",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 500.0,
+      "x": 3840,
+      "y": 0
+    },
+    {
+      "index": 2,
+      "name": "HDMI-A-2",
+      "width": 2560,
+      "height": 1080,
+      "refresh_hz": 180.0,
+      "x": 5760,
+      "y": 0
+    },
+    {
+      "index": 3,
+      "name": "HEADLESS OUTPUT",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 60.0,
+      "x": 8320,
+      "y": 0
+    },
+    {
+      "index": 4,
+      "name": "HEADLESS OUTPUT",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 60.0,
+      "x": 10240,
+      "y": 0
+    }
+  ],
+  "hyprland_outputs": [
+    {
+      "name": "DP-1",
+      "id": 0,
+      "x": 3840,
+      "y": 0,
+      "mode_width": 1920,
+      "mode_height": 1080,
+      "refresh_hz": 500.0,
+      "scale": 1,
+      "active_workspace": 1,
+      "headless": false,
+      "headless_identity_fields_empty": null
+    },
+    {
+      "name": "HDMI-A-2",
+      "id": 2,
+      "x": 5760,
+      "y": 0,
+      "mode_width": 2560,
+      "mode_height": 1080,
+      "refresh_hz": 179.983,
+      "scale": 1,
+      "active_workspace": 2,
+      "headless": false,
+      "headless_identity_fields_empty": null
+    },
+    {
+      "name": "HEADLESS-1",
+      "id": 3,
+      "x": 8320,
+      "y": 0,
+      "mode_width": 1920,
+      "mode_height": 1080,
+      "refresh_hz": 60.0,
+      "scale": 1,
+      "active_workspace": 99,
+      "headless": true,
+      "headless_identity_fields_empty": true
+    },
+    {
+      "name": "HEADLESS-3",
+      "id": 4,
+      "x": 10240,
+      "y": 0,
+      "mode_width": 1920,
+      "mode_height": 1080,
+      "refresh_hz": 60.0,
+      "scale": 1.25,
+      "active_workspace": 3,
+      "headless": true,
+      "headless_identity_fields_empty": true
+    },
+    {
+      "name": "HDMI-A-1",
+      "id": 1,
+      "x": 0,
+      "y": 0,
+      "mode_width": 3840,
+      "mode_height": 2160,
+      "refresh_hz": 60.0,
+      "scale": 1,
+      "active_workspace": 10,
+      "headless": false,
+      "headless_identity_fields_empty": null
+    }
+  ],
+  "test_output": {
+    "name": "HEADLESS-3",
+    "mode": [
+      1920,
+      1080
+    ],
+    "refresh_hz": 60.0,
+    "logical_scale": 1.25,
+    "sdl_index": 4,
+    "workspace": 3,
+    "headless_identity_fields_empty": true
+  },
+  "capture_method": "grim -T on verified Gamescope foreign-toplevel; excludes host compositor layers",
+  "matrix_run_counts": {
+    "attempts": 11,
+    "captured": 10,
+    "failed": 1,
+    "unique_cases": 10
+  },
+  "physical_output_modes_unchanged_in_all_records": true,
+  "notes": [
+    "Physical outputs are included for context but were never targeted.",
+    "HEADLESS-1 was left untouched; tests used the separate HEADLESS-3 output.",
+    "The harness captured the verified Gamescope window by foreign-toplevel stable ID; it did not screenshot the whole desktop.",
+    "Model/serial/description fields are omitted from this manifest."
+  ]
+}
