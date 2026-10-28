@@ -52,7 +52,7 @@ if grep -Fq 'FATAL EXCEPTION' "$output_dir/logcat.txt"; then
     exit 1
 fi
 
-# The control panel is on the lower-left. Compare the rightmost quarter, where the
+# The control panel is on the lower-left. Compare the rightmost eighth, where the
 # deterministic test chart is unobstructed, to prove Original and Enhanced pixels differ.
 ffmpeg -hide_banner -loglevel error -y \
     -i "$output_dir/enhanced.png" \
