@@ -48,7 +48,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        enterImmersiveMode()
 
         renderer = FsrDemoRenderer(applicationContext)
         glView = GLSurfaceView(this).apply {
@@ -73,6 +72,7 @@ class MainActivity : Activity() {
         )
         root.addView(buildControlPanel(), controlPanelLayoutParams())
         setContentView(root)
+        enterImmersiveMode()
         enhancedButton.requestFocus()
         Log.i(TAG, "output=enhanced")
     }
@@ -242,10 +242,13 @@ class MainActivity : Activity() {
     private fun enterImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false)
-            window.insetsController?.let { controller ->
-                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                controller.systemBarsBehavior =
-                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            val decor = window.decorView
+            decor.post {
+                decor.windowInsetsController?.let { controller ->
+                    controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                    controller.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
             }
         } else {
             @Suppress("DEPRECATION")
