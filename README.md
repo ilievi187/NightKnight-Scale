@@ -17,7 +17,7 @@ cd android
 gradle testDebugUnitTest assembleDebug
 ```
 
-The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. The host must also have Android SDK Platform 36 and Build Tools 35 or newer. The resulting debug APK is under `android/app/build/outputs/apk/debug/`. See [`android/README.md`](android/README.md) for measured-metric scope and current limitations. This source tree has not yet been built into an APK or run on an Android TV device/emulator.
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. The host must also have Android SDK Platform 36 and Build Tools 35 or newer. The first hosted GitHub CI Android build and JVM tests passed. The workflow now also prints the APK SHA-256 and uploads a seven-day debug APK artifact, pending verification in the next CI run. No Android TV emulator/device runtime or physical-TV validation has yet been performed. See [`android/README.md`](android/README.md) for measurement scope and limitations.
 
 ## Mode A: launch an app through Gamescope
 

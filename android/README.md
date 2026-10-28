@@ -22,7 +22,7 @@ Requirements: JDK 17, Gradle 8.13, Android SDK Platform 36 and Android SDK Build
 gradle testDebugUnitTest assembleDebug
 ```
 
-The debug APK, if the build succeeds, is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the repository. On the initial development host used for this prototype, Gradle, Android SDK, SDK tools and Android devices/emulators were not available, so source implementation is not an APK-build or device-validation claim.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK and runs the JVM tests. The first hosted build/test job passed. A subsequent CI update is configured to print the APK SHA-256 and upload it as a seven-day artifact, pending verification in the next run. The local development host lacks Gradle and Android SDK tools, and no Android device/emulator runtime validation has been performed.
 
 ## Measurement scope
 

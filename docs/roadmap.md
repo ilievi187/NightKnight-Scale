@@ -58,7 +58,9 @@ Temporal upscaling requires its needed motion/depth inputs. Frame generation is 
 - [x] Add D-pad-focusable mode controls and a remote-adjustable RCAS sharpness slider.
 - [x] Report Android display mode, GL surface / processed dimensions, renderer capability, render-callback FPS, and a sparse synchronized completion sample with its scope labeled.
 - [x] Add pure policy tests for source/target sizing and RCAS strength mapping; compile all standalone GLSL ES shaders with `glslangValidator`.
-- [ ] Build `assembleDebug` and run JVM tests with Android SDK Platform 36 / Build Tools 35+; the current host lacks Gradle and Android SDK.
+- [x] Add hosted Android Gradle/JVM CI with JDK 17, SDK Platform 36 and Build Tools 35+; first `testDebugUnitTest assembleDebug` run passed and produced a debug APK.
+- [ ] Verify the new CI APK SHA-256 log and seven-day artifact upload on the next PR workflow run.
+- [ ] Run a local Android Gradle build; the current host lacks Gradle, Android SDK and JDK 17.
 - [ ] Install and verify launch, image orientation, D-pad focus, switching and slider behavior on an Android TV emulator; label it emulator-only if used.
 - [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
 - [ ] Add a deterministic decoded video input path and compare bilinear, EASU, and EASU+RCAS against versioned reference captures.

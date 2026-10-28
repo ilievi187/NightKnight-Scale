@@ -55,3 +55,12 @@ jobs:
           cache-provider: basic
       - name: Run Android unit tests and assemble debug APK
         run: gradle -p android --no-daemon testDebugUnitTest assembleDebug
+      - name: Print debug APK SHA-256
+        run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload debug APK for manual TV testing
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightknight-scale-tv-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
