@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -28,6 +29,10 @@ internal data class RendererSnapshot(
 internal class FsrDemoRenderer(
     private val context: Context,
 ) : GLSurfaceView.Renderer {
+    private companion object {
+        const val TAG = "NKScaleTV"
+    }
+
     @Volatile
     var enhanced = true
 
@@ -73,6 +78,7 @@ internal class FsrDemoRenderer(
     private var framesInWindow = 0
     private var fpsWindowStartNs = 0L
     private var renderedFrames = 0L
+    private var loggedFirstFps = false
 
     fun snapshot() = RendererSnapshot(
         source = sourceSize,
@@ -101,8 +107,10 @@ internal class FsrDemoRenderer(
             rcasProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_rcas.frag")
             presentProgram = createProgram("shaders/fullscreen.vert", "shaders/present.frag")
             error = null
+            Log.i(TAG, "shaders=ready renderer=$gpuRenderer version=$glVersion")
         }.onFailure { failure ->
             error = "Shader initialization failed: ${failure.message ?: failure.javaClass.simpleName}"
+            Log.e(TAG, error, failure)
         }
     }
 
@@ -119,6 +127,9 @@ internal class FsrDemoRenderer(
         runCatching { createOrReplaceTargets() }
             .onFailure { failure ->
                 error = "Could not create the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
+                Log.e(TAG, error, failure)
+            }.onSuccess {
+                Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize}")
             }
     }
 
@@ -166,6 +177,10 @@ internal class FsrDemoRenderer(
             fps = framesInWindow * 1_000_000_000.0f / elapsed.toFloat()
             framesInWindow = 0
             fpsWindowStartNs = now
+            if (!loggedFirstFps) {
+                loggedFirstFps = true
+                Log.i(TAG, "render_fps=$fps")
+            }
         }
 
         // A sparse glFinish sample measures CPU-submit-to-GPU-completion time.

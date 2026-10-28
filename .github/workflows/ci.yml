@@ -64,3 +64,43 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
+
+  android-tv-emulator:
+    name: Android TV emulator GLES and remote smoke
+    runs-on: ubuntu-24.04
+    needs: android
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the tested debug APK
+        uses: actions/download-artifact@v8
+        with:
+          name: nightknight-scale-tv-debug-apk
+          path: ci-artifact
+      - name: Enable KVM for the x86 TV AVD
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Launch Android TV 1080p emulator and run GLES/remote smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: android-tv
+          arch: x86
+          profile: tv_1080p
+          cores: 2
+          ram-size: 2048M
+          heap-size: 512M
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader
+          disable-animations: true
+          script: bash android/scripts/tv-emulator-smoke.sh ci-artifact/app-debug.apk "$RUNNER_TEMP/nkscale-tv-emulator-smoke"
+      - name: Upload emulator screenshots and Logcat
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nkscale-tv-emulator-smoke
+          path: ${{ runner.temp }}/nkscale-tv-emulator-smoke/
+          if-no-files-found: warn
+          retention-days: 7

@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Display
 import android.view.Gravity
 import android.view.View
@@ -22,6 +23,10 @@ import android.widget.SeekBar
 import android.widget.TextView
 
 class MainActivity : Activity() {
+    private companion object {
+        const val TAG = "NKScaleTV"
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FsrDemoRenderer
@@ -69,6 +74,7 @@ class MainActivity : Activity() {
         root.addView(buildControlPanel(), controlPanelLayoutParams())
         setContentView(root)
         enhancedButton.requestFocus()
+        Log.i(TAG, "output=enhanced")
     }
 
     override fun onResume() {
@@ -117,12 +123,10 @@ class MainActivity : Activity() {
             setPadding(0, dp(15), 0, dp(4))
         }
         originalButton = controlButton("Original · Bilinear") {
-            renderer.enhanced = false
-            updateModeButtons()
+            setEnhancedMode(false)
         }
         enhancedButton = controlButton("Enhanced · FSR 1.0") {
-            renderer.enhanced = true
-            updateModeButtons()
+            setEnhancedMode(true)
         }
         modeRow.addView(originalButton, weightedButtonParams())
         modeRow.addView(enhancedButton, weightedButtonParams(startMargin = dp(10)))
@@ -138,6 +142,7 @@ class MainActivity : Activity() {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     renderer.sharpnessProgress = progress
                     sharpnessSummary.text = "RCAS sharpness: $progress / 20  ·  0 strongest"
+                    if (fromUser) Log.i(TAG, "sharpness=$progress")
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
@@ -189,6 +194,12 @@ class MainActivity : Activity() {
             dp(10),
             if (enhancedButton.hasFocus()) dp(3) else dp(1),
         )
+    }
+
+    private fun setEnhancedMode(enabled: Boolean) {
+        renderer.enhanced = enabled
+        Log.i(TAG, "output=${if (enabled) "enhanced" else "bilinear"}")
+        updateModeButtons()
     }
 
     private fun updateDiagnostics() {
