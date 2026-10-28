@@ -14,7 +14,7 @@ This Android application is part of the existing NightKnight-Scale repository. I
 - D-pad-focusable output controls and a LEFT/RIGHT-adjustable RCAS sharpness slider.
 - Display-mode, app GL-surface, actual processed-target, render-callback FPS and sparse synchronized render-completion diagnostics.
 
-The packaged clips are synthetic test-pattern video, not television or IPTV content. A generated chart remains as a fallback if video surface setup or decoding fails. The UI has no MediaProjection, VirtualDisplay, foreground capture service, cross-app processing, noise reduction, compression-artifact reduction, or deinterlacing. Exiting or covering this activity does not enhance other apps. No DRM or protected-content bypass is implemented or permitted.
+The packaged clips are synthetic test-pattern video, not television or IPTV content. Android MediaPlayer decodes them into an app-owned SurfaceTexture. The GLES renderer copies each external OES frame to a 2D texture before the EASU/RCAS passes. A generated chart remains as a fallback if video surface setup or decoding fails. Emulator CI verified playback, changing frames and A/B comparison, but this uses Google SwiftShader software GLES. It does not prove the target TV's hardware decoder/GPU behavior. The UI has no MediaProjection, VirtualDisplay, foreground capture service, cross-app processing, noise reduction, compression-artifact reduction, or deinterlacing. Exiting or covering this activity does not enhance other apps. No DRM or protected-content bypass is implemented or permitted.
 
 ## Build
 
@@ -24,9 +24,9 @@ Requirements: JDK 17, Gradle 8.13, Android SDK Platform 36 and Android SDK Build
 gradle testDebugUnitTest assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK, runs the JVM tests, prints the APK SHA-256, and uploads it as a seven-day artifact. Final CI run `40779565705` passed all three jobs. Emulator run `40778337710` used an API 36 Android TV 1080p AVD with Google SwiftShader GLES 3.0. It launched the app, compiled/linked the shaders, reported 1920×1080 output from a 960×540 chart, accepted D-pad mode switching and a sharpness change from 8 to 9, and produced different original/enhanced pixels in the chart crop. This is emulator-only software rendering, not physical TV or hardware GPU verification. The local host still lacks Gradle/SDK tools.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK, runs the JVM tests, prints the APK SHA-256, and uploads it as a seven-day artifact. CI run `40784574729` passed Linux, Android build/unit tests, and the H.264 emulator smoke. On an API 36 Android TV 1080p AVD with Google SwiftShader GLES 3.0, the app decoded its 960×540 H.264 clip, uploaded frames through SurfaceTexture/OES, and processed them at 1920×1080. The smoke observed decoded-frame progression, remote pause, enhanced/bilinear switching, sharpness input, and a nonzero pixel difference from the same paused video frame. This verifies software-emulator output only, not physical-TV or target-GPU behavior. The local host still lacks Gradle/SDK tools.
 
-To regenerate the test clips after intentionally removing the existing assets, run `bash scripts/generate-test-videos.sh`. The script refuses to overwrite any existing clip. Each asset has been fully decoded locally with FFmpeg. The new MediaPlayer/SurfaceTexture decode path still needs its own Android emulator run before it can be called runtime-verified.
+To regenerate the test clips after intentionally removing the existing assets, run `bash scripts/generate-test-videos.sh`. The script refuses to overwrite any existing clip. Each asset has been fully decoded locally with FFmpeg. MediaPlayer/SurfaceTexture video decode, changing-frame upload, pause, and same-frame A/B were then verified in a Google SwiftShader Android TV emulator. A physical TV test remains required for decoder/GPU/performance support claims.
 
 ## Measurement scope
 
@@ -34,6 +34,7 @@ To regenerate the test clips after intentionally removing the existing assets, r
 - **GL surface** is the dimensions passed to `GLSurfaceView.Renderer.onSurfaceChanged`.
 - **Processed target** is the intermediate output size after respecting a 4096-pixel prototype cap and the GLES maximum texture size. If that differs from the GL surface, the processed image is bilinearly presented to fill the surface.
 - **Render FPS** is the observed `onDrawFrame` callback rate, not an independently measured physical-display presentation rate.
+- **Decoded video frames** counts frames copied from the `SurfaceTexture` into the app's RGBA input texture. It is not the source decoder's requested FPS or a guaranteed display-present rate.
 - **Submit→GPU-finish sample** measures the elapsed CPU time from the start of a sampled draw callback until `glFinish()` returns. It is sampled once every 120 callbacks to avoid serializing every frame. It may include previously queued GPU work and is not a pure GPU timestamp or end-to-end presentation latency.
 
 ## Shader provenance
@@ -42,4 +43,4 @@ The EASU and RCAS shaders are GLSL ES 3.0 ports based on AMD's FidelityFX FSR 1.
 
 ## Next gate
 
-Build and run this app on an Android TV emulator/device. Confirm shader linking, upright image output, remote navigation, original/enhanced differences, and the reported metrics before adding a decoder/capture path. A MediaProjection capture, if implemented later, must use the system consent flow and display a separate processed preview; it cannot be described as replacing the source app's pixels.
+The Android TV emulator smoke confirms app launch, shader linking, H.264 MediaPlayer decode, changing frames, D-pad navigation, paused same-frame original/enhanced pixel differences, and render diagnostics under SwiftShader. The next gate is a physical Android TV/Google TV, where decoder/GPU behavior, color/orientation and performance must be independently verified. A MediaProjection capture, if implemented later, must use the system consent flow and display a separate processed preview; it cannot be described as replacing the source app's pixels.
