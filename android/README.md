@@ -22,7 +22,7 @@ Requirements: JDK 17, Gradle 8.13, Android SDK Platform 36 and Android SDK Build
 gradle testDebugUnitTest assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK, runs the JVM tests, prints the APK SHA-256, and uploads it as a seven-day artifact. Run `40778337710` passed Linux, Android build/unit tests, and an API 36 Android TV 1080p emulator smoke. On Google SwiftShader GLES 3.0, the app launched, compiled its shaders, reported 1920×1080 output from a 960×540 chart, accepted D-pad mode switching and a sharpness change from 8 to 9, and produced visibly/pixel-different original and enhanced captures. This is emulator-only software rendering, not physical TV or hardware GPU verification. The local host still lacks Gradle/SDK tools.
+The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK, runs the JVM tests, prints the APK SHA-256, and uploads it as a seven-day artifact. Final CI run `40779565705` passed all three jobs. Emulator run `40778337710` used an API 36 Android TV 1080p AVD with Google SwiftShader GLES 3.0. It launched the app, compiled/linked the shaders, reported 1920×1080 output from a 960×540 chart, accepted D-pad mode switching and a sharpness change from 8 to 9, and produced different original/enhanced pixels in the chart crop. This is emulator-only software rendering, not physical TV or hardware GPU verification. The local host still lacks Gradle/SDK tools.
 
 ## Measurement scope
 

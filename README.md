@@ -17,7 +17,7 @@ cd android
 gradle testDebugUnitTest assembleDebug
 ```
 
-The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. GitHub CI run `40778337710` passed Linux, Android build/tests, and an Android TV 1080p API 36 emulator smoke using Google SwiftShader GLES 3.0. The smoke verified shader initialization, 1920×1080 output from a 960×540 chart, D-pad Original/Enhanced switching, RCAS slider input, render-callback FPS, and a non-identical pixel crop between bilinear and enhanced output. A debug APK was downloaded and hash/container-verified. This is software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) for details.
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. Final GitHub CI run `40779565705` passed Linux, Android build/tests, and the Android TV emulator job. Run `40778337710` captured the validated A/B evidence on an Android TV 1080p API 36 AVD using Google SwiftShader GLES 3.0: shader initialization, 960×540→1920×1080, D-pad mode switching, RCAS input, render callback FPS, and non-identical output pixels. The debug APK was downloaded and hash/container-verified. This is software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) for details.
 
 ## Mode A: launch an app through Gamescope
 
