@@ -31,3 +31,27 @@ jobs:
         run: cargo test --workspace
       - name: Test headless validation safety and argument planning
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  android:
+    name: Android TV build and unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+      - name: Install Android platform and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.13'
+          cache-provider: basic
+      - name: Run Android unit tests and assemble debug APK
+        run: gradle -p android --no-daemon testDebugUnitTest assembleDebug
