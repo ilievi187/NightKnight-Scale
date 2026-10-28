@@ -17,7 +17,7 @@ cd android
 gradle testDebugUnitTest assembleDebug
 ```
 
-The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. GitHub Actions run `40784574729` passed Linux tests, Android JVM/build tests, and H.264 video playback in an API 36 Android TV 1080p emulator with Google SwiftShader GLES 3.0. The same paused frame produced different enhanced and bilinear chart pixels. The debug APK was downloaded and hash/container-verified. This is software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) for exact evidence and limits.
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. Final GitHub Actions run `40786866329` passed Linux, Android build/tests, and emulator smoke. H.264 video playback was runtime-verified in run `40784574729` on an API 36 Android TV 1080p emulator with Google SwiftShader GLES 3.0. The same paused frame produced different enhanced and bilinear pixels. The debug APK was downloaded and hash/container-verified. This is software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) for exact evidence and limits.
 
 ## Mode A: launch an app through Gamescope
 
