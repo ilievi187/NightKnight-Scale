@@ -61,7 +61,7 @@ Temporal upscaling requires its needed motion/depth inputs. Frame generation is 
 - [x] Add hosted Android Gradle/JVM CI with JDK 17, SDK Platform 36 and Build Tools 35+; first `testDebugUnitTest assembleDebug` run passed and produced a debug APK.
 - [x] Verify the CI APK SHA-256 and seven-day artifact upload. Run `40773983229` passed and the downloaded APK matched the logged digest and passed ZIP integrity.
 - [ ] Run a local Android Gradle build; the current host lacks Gradle, Android SDK and JDK 17.
-- [ ] Install and verify launch, image orientation, D-pad focus, switching and slider behavior on an Android TV emulator; label it emulator-only if used.
+- [x] Run hosted API 36 Android TV 1080p emulator smoke using Google SwiftShader GLES 3.0: activity launch, shader readiness, 960×540→1920×1080 chart output, render FPS, D-pad Original/Enhanced switching, RCAS slider 8→9, and cropped A/B pixel difference all passed. This is emulator/software-renderer evidence only.
 - [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
 - [ ] Add a deterministic decoded video input path and compare bilinear, EASU, and EASU+RCAS against versioned reference captures.
 - [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
