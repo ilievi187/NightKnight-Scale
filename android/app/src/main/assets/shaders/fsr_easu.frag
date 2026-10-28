@@ -8,6 +8,7 @@ precision highp int;
 uniform sampler2D uInput;
 uniform vec2 uInputSize;
 uniform vec2 uOutputSize;
+uniform int uFlipInputY;
 out vec4 fragColor;
 
 vec3 loadInput(ivec2 p) {
@@ -76,9 +77,12 @@ void main() {
     vec2 scale = uInputSize / uOutputSize;
     vec2 pp = gl_FragCoord.xy * scale - 0.5;
 
-    // Android Bitmap uploads put row zero at GL texture y=0. Flip the source
-    // coordinate so the chart remains upright in the normal bottom-left GL space.
-    pp.y = (uInputSize.y - 1.0) - pp.y;
+    // Android Bitmap uploads put row zero at GL texture y=0. A decoded
+    // SurfaceTexture copy is already in bottom-left GL order, so its caller
+    // disables this flip.
+    if (uFlipInputY != 0) {
+        pp.y = (uInputSize.y - 1.0) - pp.y;
+    }
     ivec2 fp = ivec2(floor(pp));
     pp -= floor(pp);
 

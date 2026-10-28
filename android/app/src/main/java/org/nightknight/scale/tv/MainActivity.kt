@@ -2,9 +2,11 @@ package org.nightknight.scale.tv
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
+import android.media.MediaPlayer
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
@@ -13,6 +15,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
+import android.view.Surface
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -21,6 +24,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import java.io.File
 
 class MainActivity : Activity() {
     private companion object {
@@ -35,8 +39,17 @@ class MainActivity : Activity() {
     private lateinit var gpuSummary: TextView
     private lateinit var metricsSummary: TextView
     private lateinit var sharpnessSummary: TextView
+    private lateinit var videoSummary: TextView
     private lateinit var originalButton: Button
     private lateinit var enhancedButton: Button
+    private lateinit var videoButton: Button
+    private lateinit var sharpnessSlider: SeekBar
+    private var currentVideoSurfaceTexture: SurfaceTexture? = null
+    private var currentVideoSource: VideoTestSource? = null
+    private var videoSurface: Surface? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var activityResumed = false
+    private var videoPlaybackError: String? = null
 
     private val refreshDiagnostics = object : Runnable {
         override fun run() {
@@ -49,10 +62,13 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        renderer = FsrDemoRenderer(applicationContext)
+        renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
+            mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
+        }
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setEGLConfigChooser(8, 8, 8, 8, 0, 0)
+            preserveEGLContextOnPause = true
             setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             isFocusable = false
@@ -79,16 +95,28 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
         if (::glView.isInitialized) glView.onResume()
+        startVideoPlaybackIfReady()
         mainHandler.removeCallbacks(refreshDiagnostics)
         mainHandler.post(refreshDiagnostics)
         enterImmersiveMode()
     }
 
     override fun onPause() {
+        activityResumed = false
+        stopVideoPlayback()
         mainHandler.removeCallbacks(refreshDiagnostics)
         if (::glView.isInitialized) glView.onPause()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        stopVideoPlayback()
+        currentVideoSurfaceTexture?.setOnFrameAvailableListener(null)
+        currentVideoSurfaceTexture?.release()
+        currentVideoSurfaceTexture = null
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -106,7 +134,7 @@ class MainActivity : Activity() {
 
         panel.addView(text("NIGHTKNIGHT SCALE TV", 24, Color.rgb(231, 242, 255), bold = true))
         panel.addView(text("GPU UPSCALING LAB  •  FULLSCREEN TEST", 12, Color.rgb(66, 216, 237), bold = true, top = 3))
-        panel.addView(text("Synthetic detail chart  •  half-resolution source", 14, Color.rgb(169, 187, 207), top = 12))
+        panel.addView(text("Looping deterministic H.264 test video", 14, Color.rgb(169, 187, 207), top = 12))
 
         modeSummary = text("Starting OpenGL ES…", 15, Color.WHITE, bold = true, top = 13)
         panel.addView(modeSummary)
@@ -132,9 +160,25 @@ class MainActivity : Activity() {
         modeRow.addView(enhancedButton, weightedButtonParams(startMargin = dp(10)))
         panel.addView(modeRow)
 
+        videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
+        panel.addView(videoSummary)
+        videoButton = controlButton("Video loading…") {
+            toggleVideoPlayback()
+        }.apply {
+            id = View.generateViewId()
+            isEnabled = false
+        }
+        panel.addView(
+            videoButton,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                topMargin = dp(5)
+            },
+        )
+
         sharpnessSummary = text("RCAS sharpness: 8 / 20  ·  0 strongest", 13, Color.rgb(205, 220, 235), top = 10)
         panel.addView(sharpnessSummary)
-        val sharpness = SeekBar(this).apply {
+        sharpnessSlider = SeekBar(this).apply {
+            id = View.generateViewId()
             max = 20
             progress = renderer.sharpnessProgress
             contentDescription = "FSR RCAS sharpness. Zero is strongest, twenty is softest."
@@ -148,7 +192,12 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         }
-        panel.addView(sharpness, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
+        originalButton.nextFocusDownId = videoButton.id
+        enhancedButton.nextFocusDownId = videoButton.id
+        videoButton.nextFocusUpId = enhancedButton.id
+        videoButton.nextFocusDownId = sharpnessSlider.id
+        sharpnessSlider.nextFocusUpId = videoButton.id
+        panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
 
         metricsSummary = text("Render FPS: waiting  ·  frame completion sample: waiting", 12, Color.rgb(169, 187, 207), top = 8)
         panel.addView(metricsSummary)
@@ -202,6 +251,107 @@ class MainActivity : Activity() {
         updateModeButtons()
     }
 
+    private fun handleVideoSurfaceAvailable(surfaceTexture: SurfaceTexture, source: VideoTestSource) {
+        if (isFinishing || isDestroyed) return
+        if (currentVideoSurfaceTexture !== surfaceTexture) {
+            stopVideoPlayback()
+            currentVideoSurfaceTexture = surfaceTexture
+        }
+        currentVideoSource = source
+        videoPlaybackError = null
+        videoSummary.text = "Preparing ${source.label} test clip…"
+        if (activityResumed) startVideoPlaybackIfReady()
+    }
+
+    private fun startVideoPlaybackIfReady() {
+        if (!activityResumed || mediaPlayer != null) return
+        val surfaceTexture = currentVideoSurfaceTexture ?: return
+        val source = currentVideoSource ?: return
+        val player = MediaPlayer()
+        val surface = Surface(surfaceTexture)
+        mediaPlayer = player
+        videoSurface = surface
+        videoPlaybackError = null
+        videoButton.isEnabled = false
+        videoButton.text = "Video loading…"
+        videoSummary.text = "Opening ${source.label} test clip…"
+
+        player.setOnPreparedListener { prepared ->
+            if (mediaPlayer !== prepared) return@setOnPreparedListener
+            runCatching {
+                prepared.isLooping = true
+                prepared.setVolume(0f, 0f)
+                prepared.start()
+                videoButton.isEnabled = true
+                videoButton.text = "Pause test video"
+                videoSummary.text = "Playing ${source.label} through the GLES input path"
+                Log.i(TAG, "video=playing source=${source.assetPath} size=${source.size}")
+            }.onFailure { failure ->
+                handleVideoPlaybackFailure(source, failure)
+            }
+        }
+        player.setOnVideoSizeChangedListener { _, width, height ->
+            Log.i(TAG, "video=decoded-size ${width}x$height source=${source.assetPath}")
+        }
+        player.setOnErrorListener { _, what, extra ->
+            handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer error $what/$extra"))
+            true
+        }
+
+        runCatching {
+            player.setDataSource(copyVideoAssetToCache(source).absolutePath)
+            player.setSurface(surface)
+            player.prepareAsync()
+        }.onFailure { failure ->
+            handleVideoPlaybackFailure(source, failure)
+        }
+    }
+
+    private fun copyVideoAssetToCache(source: VideoTestSource): File {
+        val destination = File(cacheDir, source.assetPath.substringAfterLast('/'))
+        assets.open(source.assetPath).use { input ->
+            destination.outputStream().use { output -> input.copyTo(output) }
+        }
+        return destination
+    }
+
+    private fun toggleVideoPlayback() {
+        val player = mediaPlayer ?: return
+        runCatching {
+            if (player.isPlaying) {
+                player.pause()
+                videoButton.text = "Play test video"
+                Log.i(TAG, "video=paused")
+            } else {
+                player.start()
+                videoButton.text = "Pause test video"
+                Log.i(TAG, "video=playing source=${currentVideoSource?.assetPath}")
+            }
+        }.onFailure { failure ->
+            Log.e(TAG, "video=control-error", failure)
+            videoSummary.text = "Video playback control failed."
+        }
+    }
+
+    private fun handleVideoPlaybackFailure(source: VideoTestSource, failure: Throwable) {
+        Log.e(TAG, "video=error source=${source.assetPath}", failure)
+        videoPlaybackError = "${failure.message ?: failure.javaClass.simpleName}"
+        videoSummary.text = "Video input failed. Last decoded frame/chart remains visible."
+        stopVideoPlayback()
+    }
+
+    private fun stopVideoPlayback() {
+        val player = mediaPlayer
+        mediaPlayer = null
+        if (player != null) runCatching { player.release() }
+        videoSurface?.release()
+        videoSurface = null
+        if (::videoButton.isInitialized) {
+            videoButton.isEnabled = false
+            videoButton.text = "Video loading…"
+        }
+    }
+
     private fun updateDiagnostics() {
         if (!::renderer.isInitialized) return
         val state = renderer.snapshot()
@@ -218,6 +368,13 @@ class MainActivity : Activity() {
             "${state.glVersion}  ·  ${state.gpuRenderer}  ·  max texture ${state.maxTextureSize}px"
         } else {
             state.gpuRenderer
+        }
+
+        videoSummary.text = when {
+            videoPlaybackError != null -> "Video input error: $videoPlaybackError"
+            state.videoInputError != null -> "Video input error: ${state.videoInputError}. Generated chart is retained as fallback."
+            state.decodedVideoFrames > 0L -> "Decoded ${state.videoSource}  ·  uploaded frames ${state.decodedVideoFrames}"
+            else -> "Waiting for the first decoded frame from ${state.videoSource}"
         }
 
         val fpsText = if (state.fps > 0f) "${"%.1f".format(state.fps)} fps" else "waiting"

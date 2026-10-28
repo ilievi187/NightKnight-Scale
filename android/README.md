@@ -7,12 +7,14 @@ This Android application is part of the existing NightKnight-Scale repository. I
 - Leanback launcher entry and touchscreen-optional declaration.
 - OpenGL ES 3.0 capability requirement and GPU renderer/version/max-texture detection.
 - Generated half-resolution synthetic detail chart sized to keep the demo upscale at approximately 2× per axis (4× image area).
+- Four packaged, deterministic 6-second H.264 test clips at 640×360, 960×540, 1280×720 and 1920×1080, encoded as YUV420p at 30 fps. The selected clip is approximately half of the current processed target per axis.
+- Android MediaPlayer decoding into a `SurfaceTexture` external OES texture. A GLES copy pass writes each decoded frame into an RGBA 2D texture before the existing EASU and RCAS passes.
 - A GLSL ES port of AMD FidelityFX FSR 1.0's 32-bit EASU and RCAS algorithms, executed in separate GPU fragment passes.
 - A bilinear original path for A/B comparison.
 - D-pad-focusable output controls and a LEFT/RIGHT-adjustable RCAS sharpness slider.
 - Display-mode, app GL-surface, actual processed-target, render-callback FPS and sparse synchronized render-completion diagnostics.
 
-The generated chart is a synthetic still image, not a decoded video source. The UI has no MediaProjection, VirtualDisplay, foreground capture service, cross-app processing, noise reduction, compression-artifact reduction, or deinterlacing. Exiting or covering this activity does not enhance other apps. No DRM or protected-content bypass is implemented or permitted.
+The packaged clips are synthetic test-pattern video, not television or IPTV content. A generated chart remains as a fallback if video surface setup or decoding fails. The UI has no MediaProjection, VirtualDisplay, foreground capture service, cross-app processing, noise reduction, compression-artifact reduction, or deinterlacing. Exiting or covering this activity does not enhance other apps. No DRM or protected-content bypass is implemented or permitted.
 
 ## Build
 
@@ -23,6 +25,8 @@ gradle testDebugUnitTest assembleDebug
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. GitHub PR CI builds this APK, runs the JVM tests, prints the APK SHA-256, and uploads it as a seven-day artifact. Final CI run `40779565705` passed all three jobs. Emulator run `40778337710` used an API 36 Android TV 1080p AVD with Google SwiftShader GLES 3.0. It launched the app, compiled/linked the shaders, reported 1920×1080 output from a 960×540 chart, accepted D-pad mode switching and a sharpness change from 8 to 9, and produced different original/enhanced pixels in the chart crop. This is emulator-only software rendering, not physical TV or hardware GPU verification. The local host still lacks Gradle/SDK tools.
+
+To regenerate the test clips after intentionally removing the existing assets, run `bash scripts/generate-test-videos.sh`. The script refuses to overwrite any existing clip. Each asset has been fully decoded locally with FFmpeg. The new MediaPlayer/SurfaceTexture decode path still needs its own Android emulator run before it can be called runtime-verified.
 
 ## Measurement scope
 

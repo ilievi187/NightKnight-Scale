@@ -54,7 +54,7 @@ Temporal upscaling requires its needed motion/depth inputs. Frame generation is 
 ## M6 — Android TV shader demo (in progress)
 
 - [x] Add a TV-launchable Android module in the existing repository with Leanback metadata, touchscreen-optional manifest, and OpenGL ES 3 requirement.
-- [x] Implement a foreground, fullscreen GLES demo with generated half-resolution chart input, an EASU pass, a separate RCAS pass, and original bilinear comparison.
+- [x] Implement a foreground, fullscreen GLES demo with generated chart fallback, an EASU pass, a separate RCAS pass, and original bilinear comparison.
 - [x] Add D-pad-focusable mode controls and a remote-adjustable RCAS sharpness slider.
 - [x] Report Android display mode, GL surface / processed dimensions, renderer capability, render-callback FPS, and a sparse synchronized completion sample with its scope labeled.
 - [x] Add pure policy tests for source/target sizing and RCAS strength mapping; compile all standalone GLSL ES shaders with `glslangValidator`.
@@ -62,8 +62,10 @@ Temporal upscaling requires its needed motion/depth inputs. Frame generation is 
 - [x] Verify the CI APK SHA-256 and seven-day artifact upload. Run `40773983229` passed and the downloaded APK matched the logged digest and passed ZIP integrity.
 - [ ] Run a local Android Gradle build; the current host lacks Gradle, Android SDK and JDK 17.
 - [x] Run hosted API 36 Android TV 1080p emulator smoke using Google SwiftShader GLES 3.0: activity launch, shader readiness, 960×540→1920×1080 chart output, render FPS, D-pad Original/Enhanced switching, RCAS slider 8→9, and cropped A/B pixel difference all passed. This is emulator/software-renderer evidence only.
+- [x] Generate and package deterministic 30 fps H.264 test clips at 640×360, 960×540, 1280×720 and 1920×1080 with a non-overwriting generator. Each clip fully decoded locally with FFmpeg.
+- [ ] Validate the MediaPlayer → external OES SurfaceTexture → RGBA input → EASU/RCAS path on an Android TV emulator, including changing frames and paused same-frame A/B comparison.
 - [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
-- [ ] Add a deterministic decoded video input path and compare bilinear, EASU, and EASU+RCAS against versioned reference captures.
+- [ ] Add user-selectable/local video input and compare decoded bilinear, EASU, and EASU+RCAS against versioned reference captures.
 - [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
 
 This demo is not a system-wide enhancement layer. It does not capture or replace other applications, and it has no background service. The Android milestone is incomplete until build, remote-input, frame-output and target-device checks above are performed.

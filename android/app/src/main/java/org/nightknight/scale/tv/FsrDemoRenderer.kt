@@ -3,9 +3,13 @@ package org.nightknight.scale.tv
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.SurfaceTexture
+import android.opengl.GLES11Ext
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -24,10 +28,14 @@ internal data class RendererSnapshot(
     val fps: Float,
     val synchronizedFrameMs: Float?,
     val error: String?,
+    val videoSource: String,
+    val decodedVideoFrames: Long,
+    val videoInputError: String?,
 )
 
 internal class FsrDemoRenderer(
     private val context: Context,
+    private val onVideoSurfaceAvailable: (SurfaceTexture, VideoTestSource) -> Unit,
 ) : GLSurfaceView.Renderer {
     private companion object {
         const val TAG = "NKScaleTV"
@@ -69,11 +77,29 @@ internal class FsrDemoRenderer(
     private var easuProgram = 0
     private var rcasProgram = 0
     private var presentProgram = 0
+    private var externalCopyProgram = 0
     private var inputTexture = 0
+    private var externalInputTexture = 0
     private var outputTexture = 0
     private var rcasTexture = 0
+    private var sourceFramebuffer = 0
     private var framebuffer = 0
     private var rcasFramebuffer = 0
+    private var decodedSurfaceTexture: SurfaceTexture? = null
+    private var surfaceVideoSource: VideoTestSource? = null
+    private var textureTransform = FloatArray(16)
+    @Volatile
+    private var frameAvailable = false
+
+    @Volatile
+    private var selectedVideoSource: VideoTestSource? = null
+
+    @Volatile
+    private var decodedVideoFrames = 0L
+
+    @Volatile
+    private var videoInputError: String? = null
+
     private var quad: FloatBuffer = createQuadBuffer()
     private var framesInWindow = 0
     private var fpsWindowStartNs = 0L
@@ -90,9 +116,31 @@ internal class FsrDemoRenderer(
         fps = fps,
         synchronizedFrameMs = synchronizedFrameMs,
         error = error,
+        videoSource = selectedVideoSource?.label ?: "Waiting for output size",
+        decodedVideoFrames = decodedVideoFrames,
+        videoInputError = videoInputError,
     )
 
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
+        // Context recreation invalidates the old texture name. Release the old producer
+        // surface and request a replacement after onSurfaceChanged selects the source.
+        decodedSurfaceTexture?.setOnFrameAvailableListener(null)
+        decodedSurfaceTexture?.release()
+        decodedSurfaceTexture = null
+        surfaceVideoSource = null
+        externalInputTexture = 0
+        sourceFramebuffer = 0
+        easuProgram = 0
+        rcasProgram = 0
+        presentProgram = 0
+        externalCopyProgram = 0
+        inputTexture = 0
+        outputTexture = 0
+        rcasTexture = 0
+        framebuffer = 0
+        rcasFramebuffer = 0
+        frameAvailable = false
+
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glDisable(GLES30.GL_CULL_FACE)
         GLES30.glClearColor(0.025f, 0.045f, 0.075f, 1.0f)
@@ -107,10 +155,22 @@ internal class FsrDemoRenderer(
             rcasProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_rcas.frag")
             presentProgram = createProgram("shaders/fullscreen.vert", "shaders/present.frag")
             error = null
-            Log.i(TAG, "shaders=ready renderer=$gpuRenderer version=$glVersion")
         }.onFailure { failure ->
             error = "Shader initialization failed: ${failure.message ?: failure.javaClass.simpleName}"
             Log.e(TAG, error, failure)
+        }
+        if (error == null) {
+            runCatching {
+                externalCopyProgram = createProgram(
+                    "shaders/fullscreen_external.vert",
+                    "shaders/copy_external.frag",
+                )
+                videoInputError = null
+            }.onFailure { failure ->
+                videoInputError = "External video texture is unavailable: ${failure.message ?: failure.javaClass.simpleName}"
+                Log.e(TAG, videoInputError, failure)
+            }
+            Log.i(TAG, "shaders=ready renderer=$gpuRenderer version=$glVersion videoCopy=${externalCopyProgram != 0}")
         }
     }
 
@@ -124,13 +184,22 @@ internal class FsrDemoRenderer(
             error = "The GLES device reported an invalid render target size."
             return
         }
+        val source = VideoTestSource.forTarget(targetSize)
+        sourceSize = source.size
+        selectedVideoSource = source
         runCatching { createOrReplaceTargets() }
             .onFailure { failure ->
                 error = "Could not create the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, error, failure)
-            }.onSuccess {
-                Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize}")
             }
+        if (error == null && externalCopyProgram != 0) {
+            runCatching { createExternalVideoSurface(source) }
+                .onFailure { failure ->
+                    videoInputError = "Could not create decoded-video input: ${failure.message ?: failure.javaClass.simpleName}"
+                    Log.e(TAG, videoInputError, failure)
+                }
+        }
+        Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} video=${source.assetPath}")
     }
 
     override fun onDrawFrame(unused: GL10?) {
@@ -140,6 +209,8 @@ internal class FsrDemoRenderer(
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
             return
         }
+
+        updateDecodedVideoFrame()
 
         val outputWidth = targetSize.width
         val outputHeight = targetSize.height
@@ -165,7 +236,7 @@ internal class FsrDemoRenderer(
         } else {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-            drawPresent(inputTexture, flipY = true)
+            drawPresent(inputTexture, flipY = decodedVideoFrames == 0L)
         }
 
         framesInWindow += 1
@@ -205,6 +276,10 @@ internal class FsrDemoRenderer(
             GLES30.glGetUniformLocation(easuProgram, "uOutputSize"),
             targetSize.width.toFloat(),
             targetSize.height.toFloat(),
+        )
+        GLES30.glUniform1i(
+            GLES30.glGetUniformLocation(easuProgram, "uFlipInputY"),
+            if (decodedVideoFrames == 0L) 1 else 0,
         )
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
@@ -251,10 +326,12 @@ internal class FsrDemoRenderer(
         if (inputTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(inputTexture), 0)
         if (outputTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(outputTexture), 0)
         if (rcasTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(rcasTexture), 0)
+        if (sourceFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(sourceFramebuffer), 0)
         if (framebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(framebuffer), 0)
         if (rcasFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(rcasFramebuffer), 0)
 
         inputTexture = createChartTexture(sourceSize)
+        sourceFramebuffer = createFramebuffer(inputTexture)
         outputTexture = createEmptyTexture(targetSize)
         framebuffer = createFramebuffer(outputTexture)
         if (targetSize != surfaceSize) {
@@ -263,6 +340,73 @@ internal class FsrDemoRenderer(
         } else {
             rcasTexture = 0
             rcasFramebuffer = 0
+        }
+    }
+
+    private fun createExternalVideoSurface(source: VideoTestSource) {
+        if (decodedSurfaceTexture != null && surfaceVideoSource == source) return
+
+        decodedSurfaceTexture?.setOnFrameAvailableListener(null)
+        decodedSurfaceTexture?.release()
+        if (externalInputTexture != 0) {
+            GLES30.glDeleteTextures(1, intArrayOf(externalInputTexture), 0)
+        }
+
+        val ids = IntArray(1)
+        GLES30.glGenTextures(1, ids, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, ids[0])
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+
+        val surfaceTexture = SurfaceTexture(ids[0])
+        surfaceTexture.setDefaultBufferSize(source.size.width, source.size.height)
+        surfaceTexture.setOnFrameAvailableListener(
+            { frameAvailable = true },
+            Handler(Looper.getMainLooper()),
+        )
+        externalInputTexture = ids[0]
+        decodedSurfaceTexture = surfaceTexture
+        surfaceVideoSource = source
+        frameAvailable = false
+        decodedVideoFrames = 0L
+        videoInputError = null
+        onVideoSurfaceAvailable(surfaceTexture, source)
+    }
+
+    private fun updateDecodedVideoFrame() {
+        if (!frameAvailable) return
+        val surfaceTexture = decodedSurfaceTexture ?: return
+        frameAvailable = false
+        try {
+            surfaceTexture.updateTexImage()
+            surfaceTexture.getTransformMatrix(textureTransform)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sourceFramebuffer)
+            GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
+            GLES30.glUseProgram(externalCopyProgram)
+            bindQuad(externalCopyProgram)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalInputTexture)
+            GLES30.glUniform1i(GLES30.glGetUniformLocation(externalCopyProgram, "uInput"), 0)
+            GLES30.glUniformMatrix4fv(
+                GLES30.glGetUniformLocation(externalCopyProgram, "uTextureTransform"),
+                1,
+                false,
+                textureTransform,
+                0,
+            )
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            decodedVideoFrames += 1L
+            if (decodedVideoFrames == 1L || decodedVideoFrames % 60L == 0L) {
+                Log.i(TAG, "video_frame=uploaded count=$decodedVideoFrames source=${sourceSize}")
+            }
+        } catch (failure: Exception) {
+            videoInputError = "Decoded video frame upload failed: ${failure.message ?: failure.javaClass.simpleName}"
+            Log.e(TAG, videoInputError, failure)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         }
     }
 
