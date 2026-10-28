@@ -50,3 +50,18 @@ Completion requires the runtime checks above. The milestone is still in progress
 ## Future, explicitly not V1
 
 Temporal upscaling requires its needed motion/depth inputs. Frame generation is separate from spatial FSR and may not be claimed without a real implementation and validated pacing. Anime4K, video players, HDR, game-launcher integrations, streaming, and additional compositors remain future work.
+
+## M6 — Android TV shader demo (in progress)
+
+- [x] Add a TV-launchable Android module in the existing repository with Leanback metadata, touchscreen-optional manifest, and OpenGL ES 3 requirement.
+- [x] Implement a foreground, fullscreen GLES demo with generated half-resolution chart input, an EASU pass, a separate RCAS pass, and original bilinear comparison.
+- [x] Add D-pad-focusable mode controls and a remote-adjustable RCAS sharpness slider.
+- [x] Report Android display mode, GL surface / processed dimensions, renderer capability, render-callback FPS, and a sparse synchronized completion sample with its scope labeled.
+- [x] Add pure policy tests for source/target sizing and RCAS strength mapping; compile all standalone GLSL ES shaders with `glslangValidator`.
+- [ ] Build `assembleDebug` and run JVM tests with Android SDK Platform 36 / Build Tools 35+; the current host lacks Gradle and Android SDK.
+- [ ] Install and verify launch, image orientation, D-pad focus, switching and slider behavior on an Android TV emulator; label it emulator-only if used.
+- [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
+- [ ] Add a deterministic decoded video input path and compare bilinear, EASU, and EASU+RCAS against versioned reference captures.
+- [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
+
+This demo is not a system-wide enhancement layer. It does not capture or replace other applications, and it has no background service. The Android milestone is incomplete until build, remote-input, frame-output and target-device checks above are performed.

@@ -55,3 +55,21 @@ At initial development, the host was Omarchy Linux x86_64 under Hyprland/Wayland
 - Vulkan DMA-BUF external-memory extension: https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_external_memory_dma_buf.html
 
 These references are starting points for the upcoming native/capture milestones. API and compositor support must be rechecked against the versions actually targeted before implementation.
+
+## Android TV demo (prototype)
+
+The Android application lives in `android/` in this repository; it is not a second unrelated project. It is a foreground GLES 3.0 demo with a generated half-resolution test chart as input, an EASU fragment pass into an RGBA8 texture, an RCAS fragment pass, and an on-screen presentation pass. The test chart is synthetic, not decoded video. The display-mode value comes from Android's display API; the GL surface and processed-target sizes are reported separately because logical app dimensions, physical display mode, and maximum GLES texture dimensions can differ.
+
+The shader implementation is a GLSL ES 3.0 port of AMD FidelityFX FSR 1.0's 32-bit EASU and RCAS paths. It uses explicit texel loads in place of the upstream Vulkan GLSL gather callbacks, follows the direction-adaptive 12-tap EASU filter and 2×2 anti-ringing clamp, then applies RCAS in a separate pass. The source attribution and MIT license are included in `third_party/AMD-FSR-LICENSE.txt`. The shader sources compile with `glslangValidator`; Android GPU output has not yet been visually compared with AMD's reference corpus.
+
+The demo's **Original** route is ordinary bilinear texture sampling. Its **Enhanced** route is the shader pipeline above. The UI does not hook SurfaceFlinger or Hardware Composer and cannot replace another app's presented image. The foreground activity exits or pauses normally; it does not continue enhancement behind other apps.
+
+There is no MediaProjection, VirtualDisplay, screen-capture service, input video decoder, noise reducer, deinterlacer, or DRM handling in this prototype. A future consent-based capture implementation must request a fresh system-mediated grant and process only the capture stream delivered to its own surface. Showing that processed stream in this app would be a separate presentation path, not transparent system-wide replacement. Protected/DRM surfaces must remain protected and unsupported content must be reported rather than bypassed.
+
+## References for Android TV and capture
+
+- Android TV launcher, device feature and remote-navigation requirements: https://developer.android.com/training/tv/get-started/create
+- Android OpenGL ES `GLSurfaceView` and renderer lifecycle: https://developer.android.com/develop/ui/views/graphics/opengl/environment
+- MediaProjection capture model and user-consent flow: https://developer.android.com/media/grow/media-projection
+- MediaProjection foreground-service requirements: https://developer.android.com/develop/background-work/services/fgs/service-types
+- AMD FidelityFX FSR 1.0 source and algorithm: https://github.com/GPUOpen-Effects/FidelityFX-FSR

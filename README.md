@@ -1,12 +1,23 @@
 # NightKnight Scale (NKScale)
 
-Linux-first GPU scaling control application. The first usable path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
+Open-source picture-scaling experiments, with Android TV now the priority and the existing Linux Gamescope prototype preserved as a separate supported path. The Linux path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
 
 ## Current state
 
-This is an early working prototype. The Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are implemented. The Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified. Native Vulkan processing and portal-authorized capture are later milestones.
+This is an early prototype. The Android TV GLES demo is being introduced in `android/`: it renders a deterministic synthetic chart through a GLES 3.0 EASU + RCAS pipeline and lets a TV remote switch between that result and bilinear original output. It is an in-app demo, not a system-wide enhancement layer. Android build/device validation and real video playback remain pending. The existing Linux Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are preserved. The Linux Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the Linux validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified.
 
 Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). Do not interpret the aspirational roadmap as shipped functionality.
+
+## Android TV prototype
+
+The first Android path is a fullscreen OpenGL ES 3.0 demonstration with a half-resolution synthetic detail chart. Its EASU and RCAS fragment shaders are separate GPU passes, derived from AMD's FSR 1.0 algorithm and attributed under the included MIT license. A D-pad navigates **Original · Bilinear** and **Enhanced · FSR 1.0**; LEFT/RIGHT on the focused sharpness slider adjusts RCAS intensity. The app reports the Android display mode, GL surface and processing dimensions, GL renderer/version, callback FPS, and a sparse CPU-submit-to-`glFinish` completion sample.
+
+```sh
+cd android
+gradle testDebugUnitTest assembleDebug
+```
+
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. The host must also have Android SDK Platform 36 and Build Tools 35 or newer. The resulting debug APK is under `android/app/build/outputs/apk/debug/`. See [`android/README.md`](android/README.md) for measured-metric scope and current limitations. This source tree has not yet been built into an APK or run on an Android TV device/emulator.
 
 ## Mode A: launch an app through Gamescope
 
