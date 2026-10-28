@@ -98,7 +98,6 @@ jobs:
           heap-size: 512M
           emulator-boot-timeout: 600
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader
-          disable-animations: true
           script: bash android/scripts/tv-emulator-smoke.sh ci-artifact/app-debug.apk "$RUNNER_TEMP/nkscale-tv-emulator-smoke"
       - name: Upload emulator screenshots and Logcat
         if: always()
