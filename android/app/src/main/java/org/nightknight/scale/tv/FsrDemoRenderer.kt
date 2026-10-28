@@ -259,6 +259,10 @@ internal class FsrDemoRenderer(
         if (renderedFrames % 120L == 0L) {
             GLES30.glFinish()
             synchronizedFrameMs = (System.nanoTime() - frameStartNs) / 1_000_000.0f
+            Log.i(
+                TAG,
+                "render_completion_ms=$synchronizedFrameMs frame=$renderedFrames mode=${if (enhanced) "enhanced" else "bilinear"} method=glFinish",
+            )
         }
     }
 

@@ -43,6 +43,8 @@ wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
 wait_for_log_marker 'video=playing' 'MediaPlayer prepare/start'
 wait_for_log_marker 'video_frame=uploaded' 'decoded SurfaceTexture frame upload'
 wait_for_log_marker 'render_fps=' 'render callback FPS'
+# Stay in Enhanced while the sparse 120-callback glFinish sample is collected.
+wait_for_log_marker 'render_completion_ms=' 'sparse submit-to-GL-finish sample'
 
 # Compare two moving decoded frames before pausing to prove MediaPlayer is feeding GLES.
 adb exec-out screencap -p > "$output_dir/video-motion-a.png"
