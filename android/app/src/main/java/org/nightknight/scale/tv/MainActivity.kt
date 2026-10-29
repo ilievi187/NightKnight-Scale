@@ -150,8 +150,12 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(15), 0, dp(4))
         }
-        originalButton = controlButton(RenderMode.BILINEAR.label) { setRenderMode(RenderMode.BILINEAR) }
-        algorithmButton = controlButton("Next: ${renderer.mode.nextAlgorithm().label}") { cycleAlgorithmMode() }
+        originalButton = controlButton(RenderMode.BILINEAR.label) { setRenderMode(RenderMode.BILINEAR) }.apply {
+            id = View.generateViewId()
+        }
+        algorithmButton = controlButton("Next: ${renderer.mode.nextAlgorithm().label}") { cycleAlgorithmMode() }.apply {
+            id = View.generateViewId()
+        }
         modeRow.addView(originalButton, weightedButtonParams())
         modeRow.addView(algorithmButton, weightedButtonParams(startMargin = dp(10)))
         panel.addView(modeRow)
@@ -189,7 +193,9 @@ class MainActivity : Activity() {
             })
         }
         originalButton.nextFocusDownId = videoButton.id
+        originalButton.nextFocusRightId = algorithmButton.id
         algorithmButton.nextFocusDownId = videoButton.id
+        algorithmButton.nextFocusLeftId = originalButton.id
         videoButton.nextFocusUpId = algorithmButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
         sharpnessSlider.nextFocusUpId = videoButton.id
