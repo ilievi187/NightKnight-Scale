@@ -137,6 +137,8 @@ assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/easu-only
     "EASU-only and bilinear captures were identical"
 assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/fsr1-paused.rgb" \
     "FSR1 EASU+RCAS and bilinear captures were identical"
+assert_different_pixels "$output_dir/easu-only-paused.rgb" "$output_dir/fsr1-paused.rgb" \
+    "RCAS did not change the EASU-only result"
 assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-nr-paused.rgb" \
     "FSR1 and edge-aware NR variants were identical"
 assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-sharpness9.rgb" \
