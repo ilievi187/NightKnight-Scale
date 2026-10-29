@@ -28,6 +28,7 @@ internal data class RendererSnapshot(
     val fps: Float,
     val synchronizedFrameMs: Float?,
     val error: String?,
+    val mode: RenderMode,
     val videoSource: String,
     val decodedVideoFrames: Long,
     val videoInputError: String?,
@@ -42,7 +43,7 @@ internal class FsrDemoRenderer(
     }
 
     @Volatile
-    var enhanced = true
+    var mode = RenderMode.FSR1
 
     @Volatile
     var sharpnessProgress = 8
@@ -77,12 +78,15 @@ internal class FsrDemoRenderer(
     private var easuProgram = 0
     private var rcasProgram = 0
     private var presentProgram = 0
+    private var denoiseProgram = 0
     private var externalCopyProgram = 0
     private var inputTexture = 0
     private var externalInputTexture = 0
+    private var denoisedTexture = 0
     private var outputTexture = 0
     private var rcasTexture = 0
     private var sourceFramebuffer = 0
+    private var denoiseFramebuffer = 0
     private var framebuffer = 0
     private var rcasFramebuffer = 0
     private var decodedSurfaceTexture: SurfaceTexture? = null
@@ -116,6 +120,7 @@ internal class FsrDemoRenderer(
         fps = fps,
         synchronizedFrameMs = synchronizedFrameMs,
         error = error,
+        mode = mode,
         videoSource = selectedVideoSource?.label ?: "Waiting for output size",
         decodedVideoFrames = decodedVideoFrames,
         videoInputError = videoInputError,
@@ -130,11 +135,14 @@ internal class FsrDemoRenderer(
         surfaceVideoSource = null
         externalInputTexture = 0
         sourceFramebuffer = 0
+        denoiseFramebuffer = 0
         easuProgram = 0
         rcasProgram = 0
         presentProgram = 0
+        denoiseProgram = 0
         externalCopyProgram = 0
         inputTexture = 0
+        denoisedTexture = 0
         outputTexture = 0
         rcasTexture = 0
         framebuffer = 0
@@ -154,6 +162,7 @@ internal class FsrDemoRenderer(
             easuProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_easu.frag")
             rcasProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_rcas.frag")
             presentProgram = createProgram("shaders/fullscreen.vert", "shaders/present.frag")
+            denoiseProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_denoise.frag")
             error = null
         }.onFailure { failure ->
             error = "Shader initialization failed: ${failure.message ?: failure.javaClass.simpleName}"
@@ -179,7 +188,6 @@ internal class FsrDemoRenderer(
         surfaceSize = PixelSize(width, height)
         // Avoid allocating an unbounded multi-4K intermediate on unusually large displays.
         targetSize = RenderPolicy.targetFor(surfaceSize, minOf(maxTextureSize, 4096))
-        sourceSize = RenderPolicy.testSourceFor(targetSize)
         if (targetSize.width <= 0 || targetSize.height <= 0) {
             error = "The GLES device reported an invalid render target size."
             return
@@ -214,29 +222,33 @@ internal class FsrDemoRenderer(
 
         val outputWidth = targetSize.width
         val outputHeight = targetSize.height
-        if (enhanced && easuProgram != 0 && rcasProgram != 0 && framebuffer != 0) {
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
-            GLES30.glViewport(0, 0, outputWidth, outputHeight)
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            drawEasu()
-
-            if (targetSize == surfaceSize) {
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-                GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-                drawRcas()
-            } else {
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, rcasFramebuffer)
-                GLES30.glViewport(0, 0, outputWidth, outputHeight)
-                GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-                drawRcas()
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-                GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-                drawPresent(rcasTexture, flipY = false)
+        when (mode) {
+            RenderMode.BILINEAR -> presentOriginal()
+            RenderMode.EASU_ONLY -> {
+                drawEasuToTarget(inputTexture, outputWidth, outputHeight)
+                presentProcessed(outputTexture)
             }
-        } else {
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-            drawPresent(inputTexture, flipY = decodedVideoFrames == 0L)
+            RenderMode.FSR1,
+            RenderMode.FSR1_DENOISE -> {
+                val easuInput = if (mode.usesNoiseReduction) {
+                    drawDenoise()
+                    denoisedTexture
+                } else {
+                    inputTexture
+                }
+                drawEasuToTarget(easuInput, outputWidth, outputHeight)
+                if (targetSize == surfaceSize) {
+                    GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                    GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
+                    drawRcas()
+                } else {
+                    GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, rcasFramebuffer)
+                    GLES30.glViewport(0, 0, outputWidth, outputHeight)
+                    GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+                    drawRcas()
+                    presentProcessed(rcasTexture)
+                }
+            }
         }
 
         framesInWindow += 1
@@ -261,15 +273,49 @@ internal class FsrDemoRenderer(
             synchronizedFrameMs = (System.nanoTime() - frameStartNs) / 1_000_000.0f
             Log.i(
                 TAG,
-                "render_completion_ms=$synchronizedFrameMs frame=$renderedFrames mode=${if (enhanced) "enhanced" else "bilinear"} method=glFinish",
+                "render_completion_ms=$synchronizedFrameMs frame=$renderedFrames mode=${mode.id} method=glFinish",
             )
         }
     }
 
-    private fun drawEasu() {
+    private fun presentOriginal() {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
+        drawPresent(inputTexture, flipY = decodedVideoFrames == 0L)
+    }
+
+    private fun drawDenoise() {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, denoiseFramebuffer)
+        GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        GLES30.glUseProgram(denoiseProgram)
+        bindQuad(denoiseProgram)
+        bindTexture(inputTexture)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(denoiseProgram, "uInput"), 0)
+        GLES30.glUniform1f(
+            GLES30.glGetUniformLocation(denoiseProgram, "uStrength"),
+            FilterPolicy.DEFAULT_DENOISE_STRENGTH,
+        )
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    private fun drawEasuToTarget(sourceTexture: Int, outputWidth: Int, outputHeight: Int) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
+        GLES30.glViewport(0, 0, outputWidth, outputHeight)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        drawEasu(sourceTexture)
+    }
+
+    private fun presentProcessed(texture: Int) {
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
+        drawPresent(texture, flipY = false)
+    }
+
+    private fun drawEasu(sourceTexture: Int) {
         GLES30.glUseProgram(easuProgram)
         bindQuad(easuProgram)
-        bindTexture(inputTexture)
+        bindTexture(sourceTexture)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(easuProgram, "uInput"), 0)
         GLES30.glUniform2f(
             GLES30.glGetUniformLocation(easuProgram, "uInputSize"),
@@ -328,15 +374,19 @@ internal class FsrDemoRenderer(
 
     private fun createOrReplaceTargets() {
         if (inputTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(inputTexture), 0)
+        if (denoisedTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(denoisedTexture), 0)
         if (outputTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(outputTexture), 0)
         if (rcasTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(rcasTexture), 0)
         if (sourceFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(sourceFramebuffer), 0)
+        if (denoiseFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(denoiseFramebuffer), 0)
         if (framebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(framebuffer), 0)
         if (rcasFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(rcasFramebuffer), 0)
 
         inputTexture = createChartTexture(sourceSize)
         sourceFramebuffer = createFramebuffer(inputTexture)
-        outputTexture = createEmptyTexture(targetSize)
+        denoisedTexture = createEmptyTexture(sourceSize)
+        denoiseFramebuffer = createFramebuffer(denoisedTexture)
+        outputTexture = createEmptyTexture(targetSize, GLES30.GL_LINEAR)
         framebuffer = createFramebuffer(outputTexture)
         if (targetSize != surfaceSize) {
             rcasTexture = createEmptyTexture(targetSize, GLES30.GL_LINEAR)

@@ -41,7 +41,7 @@ class MainActivity : Activity() {
     private lateinit var sharpnessSummary: TextView
     private lateinit var videoSummary: TextView
     private lateinit var originalButton: Button
-    private lateinit var enhancedButton: Button
+    private lateinit var algorithmButton: Button
     private lateinit var videoButton: Button
     private lateinit var sharpnessSlider: SeekBar
     private var currentVideoSurfaceTexture: SurfaceTexture? = null
@@ -89,8 +89,8 @@ class MainActivity : Activity() {
         root.addView(buildControlPanel(), controlPanelLayoutParams())
         setContentView(root)
         enterImmersiveMode()
-        enhancedButton.requestFocus()
-        Log.i(TAG, "output=enhanced")
+        algorithmButton.requestFocus()
+        logRenderMode(renderer.mode)
     }
 
     override fun onResume() {
@@ -150,14 +150,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(15), 0, dp(4))
         }
-        originalButton = controlButton("Original · Bilinear") {
-            setEnhancedMode(false)
-        }
-        enhancedButton = controlButton("Enhanced · FSR 1.0") {
-            setEnhancedMode(true)
-        }
+        originalButton = controlButton(RenderMode.BILINEAR.label) { setRenderMode(RenderMode.BILINEAR) }
+        algorithmButton = controlButton("Next: ${renderer.mode.nextAlgorithm().label}") { cycleAlgorithmMode() }
         modeRow.addView(originalButton, weightedButtonParams())
-        modeRow.addView(enhancedButton, weightedButtonParams(startMargin = dp(10)))
+        modeRow.addView(algorithmButton, weightedButtonParams(startMargin = dp(10)))
         panel.addView(modeRow)
 
         videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
@@ -193,8 +189,8 @@ class MainActivity : Activity() {
             })
         }
         originalButton.nextFocusDownId = videoButton.id
-        enhancedButton.nextFocusDownId = videoButton.id
-        videoButton.nextFocusUpId = enhancedButton.id
+        algorithmButton.nextFocusDownId = videoButton.id
+        videoButton.nextFocusUpId = algorithmButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
         sharpnessSlider.nextFocusUpId = videoButton.id
         panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
@@ -217,7 +213,8 @@ class MainActivity : Activity() {
         stateListAnimator = null
         background = roundedBackground(Color.rgb(23, 39, 58), Color.rgb(60, 85, 108), dp(10))
         setOnFocusChangeListener { view, focused ->
-            val selected = (view === enhancedButton && renderer.enhanced) || (view === originalButton && !renderer.enhanced)
+            val selected = (view === algorithmButton && renderer.mode != RenderMode.BILINEAR) ||
+                (view === originalButton && renderer.mode == RenderMode.BILINEAR)
             view.background = roundedBackground(
                 if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (focused) Color.rgb(66, 216, 237) else if (selected) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
@@ -229,26 +226,33 @@ class MainActivity : Activity() {
     }
 
     private fun updateModeButtons() {
-        if (!::originalButton.isInitialized || !::enhancedButton.isInitialized) return
-        val enhanced = renderer.enhanced
+        if (!::originalButton.isInitialized || !::algorithmButton.isInitialized) return
+        val original = renderer.mode == RenderMode.BILINEAR
+        algorithmButton.text = "Next: ${renderer.mode.nextAlgorithm().label}"
         originalButton.background = roundedBackground(
-            if (!enhanced) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
-            if (!enhanced || originalButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
+            if (original) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+            if (original || originalButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
             dp(10),
             if (originalButton.hasFocus()) dp(3) else dp(1),
         )
-        enhancedButton.background = roundedBackground(
-            if (enhanced) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
-            if (enhanced || enhancedButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
+        algorithmButton.background = roundedBackground(
+            if (!original) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+            if (!original || algorithmButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
             dp(10),
-            if (enhancedButton.hasFocus()) dp(3) else dp(1),
+            if (algorithmButton.hasFocus()) dp(3) else dp(1),
         )
     }
 
-    private fun setEnhancedMode(enabled: Boolean) {
-        renderer.enhanced = enabled
-        Log.i(TAG, "output=${if (enabled) "enhanced" else "bilinear"}")
+    private fun setRenderMode(mode: RenderMode) {
+        renderer.mode = mode
+        logRenderMode(mode)
         updateModeButtons()
+    }
+
+    private fun cycleAlgorithmMode() = setRenderMode(renderer.mode.nextAlgorithm())
+
+    private fun logRenderMode(mode: RenderMode) {
+        Log.i(TAG, "mode=${mode.id} output=${if (mode.usesEasu) "enhanced" else "bilinear"}")
     }
 
     private fun handleVideoSurfaceAvailable(surfaceTexture: SurfaceTexture, source: VideoTestSource) {
@@ -355,8 +359,7 @@ class MainActivity : Activity() {
     private fun updateDiagnostics() {
         if (!::renderer.isInitialized) return
         val state = renderer.snapshot()
-        val selected = if (renderer.enhanced) "Enhanced output · AMD FSR 1.0 EASU + RCAS" else "Original output · bilinear upscale only"
-        modeSummary.text = state.error ?: selected
+        modeSummary.text = state.error ?: state.mode.summary
 
         val displayMode = currentDisplayMode()
         val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
