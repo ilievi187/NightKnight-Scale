@@ -39,6 +39,22 @@ wait_for_log_marker() {
     exit 1
 }
 
+wait_for_log_occurrences() {
+    marker="$1"
+    expected="$2"
+    description="$3"
+    for attempt in $(seq 1 90); do
+        occurrences="$(adb logcat -d -s NKScaleTV:I | grep -Fc "$marker" || true)"
+        if [ "${occurrences:-0}" -ge "$expected" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timed out waiting for $expected occurrences of $marker: $description" >&2
+    adb logcat -d -s NKScaleTV:V AndroidRuntime:E >&2
+    exit 1
+}
+
 wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
 wait_for_log_marker 'video=playing' 'MediaPlayer prepare/start'
 wait_for_log_marker 'video_frame=uploaded' 'decoded SurfaceTexture frame upload'
@@ -51,11 +67,20 @@ adb exec-out screencap -p > "$output_dir/video-motion-a.png"
 sleep 1
 adb exec-out screencap -p > "$output_dir/video-motion-b.png"
 
-# Initial focus is the algorithm control in FSR1 mode. DOWN opens the pause control.
+# Initial focus is the algorithm control. DOWN opens the pause control, then
+# the same D-pad button resumes. Two post-resume captures prove frames advance again.
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_marker 'video=paused' 'remote pause control'
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'video=playing source=' 2 'remote resume control'
 sleep 1
+adb exec-out screencap -p > "$output_dir/video-resumed-a.png"
+sleep 1
+adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'video=paused' 2 'second pause after resume-motion check'
+# Return focus to the algorithm control before comparing filter modes.
 adb shell input keyevent KEYCODE_DPAD_UP
 sleep 1
 adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
@@ -115,6 +140,8 @@ crop_chart_region() {
 # The lower-left TV control panel cannot cover this rightmost chart strip.
 crop_chart_region "$output_dir/video-motion-a.png" "$output_dir/video-motion-a.rgb"
 crop_chart_region "$output_dir/video-motion-b.png" "$output_dir/video-motion-b.rgb"
+crop_chart_region "$output_dir/video-resumed-a.png" "$output_dir/video-resumed-a.rgb"
+crop_chart_region "$output_dir/video-resumed-b.png" "$output_dir/video-resumed-b.rgb"
 crop_chart_region "$output_dir/fsr1-paused.png" "$output_dir/fsr1-paused.rgb"
 crop_chart_region "$output_dir/fsr1-nr-paused.png" "$output_dir/fsr1-nr-paused.rgb"
 crop_chart_region "$output_dir/easu-only-paused.png" "$output_dir/easu-only-paused.rgb"
@@ -133,6 +160,8 @@ assert_different_pixels() {
 
 assert_different_pixels "$output_dir/video-motion-a.rgb" "$output_dir/video-motion-b.rgb" \
     "Decoded H.264 frame captures did not change across one second of playback"
+assert_different_pixels "$output_dir/video-resumed-a.rgb" "$output_dir/video-resumed-b.rgb" \
+    "Decoded H.264 frame captures did not resume advancing after the remote Play control"
 assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/easu-only-paused.rgb" \
     "EASU-only and bilinear captures were identical"
 assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/fsr1-paused.rgb" \
@@ -147,10 +176,12 @@ assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-sharpnes
 sha256sum \
     "$output_dir/video-motion-a.png" \
     "$output_dir/video-motion-b.png" \
+    "$output_dir/video-resumed-a.png" \
+    "$output_dir/video-resumed-b.png" \
     "$output_dir/bilinear-paused.png" \
     "$output_dir/easu-only-paused.png" \
     "$output_dir/fsr1-paused.png" \
     "$output_dir/fsr1-nr-paused.png" \
     "$output_dir/fsr1-sharpness9.png" \
     "$output_dir/logcat.txt"
-echo "Android TV emulator four-mode H.264/GLES smoke passed on SwiftShader. Pixel differences are not quality scores. This is emulator-only evidence, not target GPU or physical-TV validation."
+echo "Android TV emulator four-mode H.264/GLES smoke passed on SwiftShader. Pause/resume motion, remote filters and sharpness were exercised. Pixel differences are not quality scores. This is emulator-only evidence, not target GPU or physical-TV validation."
