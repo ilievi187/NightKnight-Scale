@@ -26,7 +26,7 @@ Android MediaProjection is an explicit, user-consented screen/app capture API th
 
 ## Device/performance evidence
 
-The repository's previous CI smoke used an API 36 Android TV AVD with Google SwiftShader. That confirms GLES shader execution and app behavior under software emulation only. It is not a physical TCL 55C645 decoder/GPU/frame-pacing/thermal test. No current physical-TV performance or visual-quality claim is made. The TV's external video inputs and its internal Google TV app environment are distinct from a third-party app's own rendering surface.
+Mission 5 Actions run `41237543233` and the local API 36 AVD exercised the app under Google SwiftShader, including five local video fixtures. This confirms shader/app behavior under software emulation only. It is not a physical TCL 55C645 decoder/GPU/frame-pacing/thermal test. No current physical-TV performance or visual-quality claim is made. The TV's external video inputs and its internal Google TV app environment are distinct from a third-party app's own rendering surface.
 
 ## Release blockers still open
 

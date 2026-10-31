@@ -17,7 +17,7 @@ cd android
 gradle testDebugUnitTest assembleDebug
 ```
 
-The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17 and compile SDK 36. Mission 4 PR checks on commit `806ec9c` passed Linux formatting/lint/tests and Android build/emulator smoke; they do not cover the uncommitted Mission 5 tree. Mission 5 local build and emulator validation are in progress, and a new CI artifact will only be claimed after the current PR head passes. This remains software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) and the [acceptance matrix](docs/agent/luna-tv/acceptance-matrix.md) for exact evidence and limits.
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17 and compile SDK 36. Mission 5 code commit `ead8c77` passed PR #3 [Actions run `41237543233`](https://github.com/ilievi187/NightKnight-Scale/actions/runs/41237543233): Linux format/lint/tests, Android JVM tests/debug APK, and Android TV GLES/remote/local-file emulator smoke. The Actions APK artifact `nightknight-scale-tv-debug-apk` (artifact ID `13055664172`) was downloaded, identified as an Android package, and passed ZIP integrity; SHA-256 `c6e6a60e88745532ce1fcd5d7a4b67196dc4846c550115fb5cac705495ff1398`. The emulator evidence artifact is `nkscale-tv-emulator-smoke` (ID `13056084241`); both artifacts have seven-day retention. This is software-rendered API 36 AVD evidence, not physical TCL 55C645 or target-GPU validation. See [`android/README.md`](android/README.md), the [compatibility note](docs/android-tv-compatibility.md), and [acceptance matrix](docs/agent/luna-tv/acceptance-matrix.md) for limits.
 
 ## Mode A: launch an app through Gamescope
 
