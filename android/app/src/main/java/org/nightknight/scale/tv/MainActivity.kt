@@ -390,7 +390,7 @@ class MainActivity : Activity() {
             } else {
                 player.start()
                 videoButton.text = "Pause video"
-                Log.i(TAG, "video=playing input=${selectedLocalVideoUri?.let { "local video" } ?: currentVideoSource?.label}")
+                Log.i(TAG, "video=playing source=${if (selectedLocalVideoUri != null) "local-video" else currentVideoSource?.assetPath}")
             }
         }.onFailure { failure ->
             Log.e(TAG, "video=control-error", failure)
