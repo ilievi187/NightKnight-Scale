@@ -17,6 +17,7 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
+import java.util.concurrent.atomic.AtomicLong
 
 internal data class RendererSnapshot(
     val source: PixelSize,
@@ -26,6 +27,16 @@ internal data class RendererSnapshot(
     val glVersion: String,
     val maxTextureSize: Int,
     val fps: Float,
+    val renderSubmitMs: Float?,
+    val lastFrameIntervalMs: Float?,
+    val averageFrameIntervalMs: Float?,
+    val maximumFrameIntervalMs: Float?,
+    val inputFps: Float,
+    val easuStageCount: Int,
+    val estimatedRgbaTextureBytes: Long,
+    val videoFrameCallbacks: Long,
+    val estimatedSkippedFrames: Long,
+    val decoderLagEvents: Long,
     val synchronizedFrameMs: Float?,
     val error: String?,
     val mode: RenderMode,
@@ -70,6 +81,38 @@ internal class FsrDemoRenderer(
     private var fps = 0.0f
 
     @Volatile
+    private var renderSubmitMs: Float? = null
+
+    @Volatile
+    private var lastFrameIntervalMs: Float? = null
+
+    @Volatile
+    private var averageFrameIntervalMs: Float? = null
+
+    @Volatile
+    private var maximumFrameIntervalMs: Float? = null
+
+    @Volatile
+    private var inputFps = 0.0f
+
+    @Volatile
+    private var easuStageCount = 0
+
+    @Volatile
+    private var estimatedSkippedFrames = 0L
+
+    private val totalVideoFrameCallbacks = AtomicLong()
+    private val pendingVideoFrameCallbacks = AtomicLong()
+    private val decoderLagEvents = AtomicLong()
+    private var previousFrameStartNs = 0L
+    private var frameIntervalWindowStartNs = 0L
+    private var frameIntervalWindowTotalNs = 0L
+    private var frameIntervalWindowCount = 0L
+    private var frameIntervalWindowMaxNs = 0L
+    private var inputFpsWindowStartNs = 0L
+    private var inputFpsWindowCount = 0L
+
+    @Volatile
     private var synchronizedFrameMs: Float? = null
 
     @Volatile
@@ -85,10 +128,14 @@ internal class FsrDemoRenderer(
     private var denoisedTexture = 0
     private var outputTexture = 0
     private var rcasTexture = 0
+    private var easuIntermediateTextureA = 0
+    private var easuIntermediateTextureB = 0
     private var sourceFramebuffer = 0
     private var denoiseFramebuffer = 0
     private var framebuffer = 0
     private var rcasFramebuffer = 0
+    private var easuIntermediateFramebufferA = 0
+    private var easuIntermediateFramebufferB = 0
     private var decodedSurfaceTexture: SurfaceTexture? = null
     private var surfaceVideoSource: VideoTestSource? = null
     private var textureTransform = FloatArray(16)
@@ -118,6 +165,16 @@ internal class FsrDemoRenderer(
         glVersion = glVersion,
         maxTextureSize = maxTextureSize,
         fps = fps,
+        renderSubmitMs = renderSubmitMs,
+        lastFrameIntervalMs = lastFrameIntervalMs,
+        averageFrameIntervalMs = averageFrameIntervalMs,
+        maximumFrameIntervalMs = maximumFrameIntervalMs,
+        inputFps = inputFps,
+        easuStageCount = easuStageCount,
+        estimatedRgbaTextureBytes = RenderPolicy.estimatedRgbaTextureBytes(sourceSize, targetSize, surfaceSize),
+        videoFrameCallbacks = totalVideoFrameCallbacks.get(),
+        estimatedSkippedFrames = estimatedSkippedFrames,
+        decoderLagEvents = decoderLagEvents.get(),
         synchronizedFrameMs = synchronizedFrameMs,
         error = error,
         mode = mode,
@@ -125,6 +182,10 @@ internal class FsrDemoRenderer(
         decodedVideoFrames = decodedVideoFrames,
         videoInputError = videoInputError,
     )
+
+    fun recordDecoderLag() {
+        decoderLagEvents.incrementAndGet()
+    }
 
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         // Context recreation invalidates the old texture name. Release the old producer
@@ -147,6 +208,10 @@ internal class FsrDemoRenderer(
         rcasTexture = 0
         framebuffer = 0
         rcasFramebuffer = 0
+        easuIntermediateTextureA = 0
+        easuIntermediateTextureB = 0
+        easuIntermediateFramebufferA = 0
+        easuIntermediateFramebufferB = 0
         frameAvailable = false
 
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
@@ -212,7 +277,8 @@ internal class FsrDemoRenderer(
                     Log.e(TAG, videoInputError, failure)
                 }
         }
-        Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} video=${source.assetPath}")
+        easuStageCount = RenderPolicy.easuStages(sourceSize, targetSize).size
+        Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} easu_stages=$easuStageCount rgba_texture_bytes=${RenderPolicy.estimatedRgbaTextureBytes(sourceSize, targetSize, surfaceSize)} video=${source.assetPath}")
     }
 
     /** Called only on the GL thread after the decoder reports its actual input dimensions. */
@@ -231,11 +297,33 @@ internal class FsrDemoRenderer(
                 error = "Could not resize the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, error, failure)
             }
-        Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize")
+        easuStageCount = RenderPolicy.easuStages(sourceSize, targetSize).size
+        Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize easu_stages=$easuStageCount rgba_texture_bytes=${RenderPolicy.estimatedRgbaTextureBytes(sourceSize, targetSize, surfaceSize)}")
+    }
+
+    private fun recordFrameInterval(frameStartNs: Long) {
+        if (previousFrameStartNs > 0L && frameStartNs > previousFrameStartNs) {
+            val intervalNs = frameStartNs - previousFrameStartNs
+            lastFrameIntervalMs = intervalNs / 1_000_000.0f
+            frameIntervalWindowTotalNs += intervalNs
+            frameIntervalWindowCount += 1L
+            frameIntervalWindowMaxNs = maxOf(frameIntervalWindowMaxNs, intervalNs)
+        }
+        previousFrameStartNs = frameStartNs
+        if (frameIntervalWindowStartNs == 0L) frameIntervalWindowStartNs = frameStartNs
+        if (frameStartNs - frameIntervalWindowStartNs >= 1_000_000_000L && frameIntervalWindowCount > 0L) {
+            averageFrameIntervalMs = frameIntervalWindowTotalNs / frameIntervalWindowCount / 1_000_000.0f
+            maximumFrameIntervalMs = frameIntervalWindowMaxNs / 1_000_000.0f
+            frameIntervalWindowStartNs = frameStartNs
+            frameIntervalWindowTotalNs = 0L
+            frameIntervalWindowCount = 0L
+            frameIntervalWindowMaxNs = 0L
+        }
     }
 
     override fun onDrawFrame(unused: GL10?) {
         val frameStartNs = System.nanoTime()
+        recordFrameInterval(frameStartNs)
         if (error != null || presentProgram == 0 || inputTexture == 0) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
@@ -246,24 +334,24 @@ internal class FsrDemoRenderer(
 
         val outputWidth = targetSize.width
         val outputHeight = targetSize.height
-        when (mode) {
-            RenderMode.BILINEAR -> presentOriginal()
-            RenderMode.EASU_ONLY -> {
-                drawEasuToTarget(inputTexture, outputWidth, outputHeight)
+        val canUpscaleWithEasu = sourceSize.width <= targetSize.width && sourceSize.height <= targetSize.height
+        when {
+            mode == RenderMode.BILINEAR || (mode.usesEasu && !canUpscaleWithEasu) -> presentOriginal()
+            mode == RenderMode.EASU_ONLY -> {
+                drawEasuChain(inputTexture)
                 presentProcessed(outputTexture)
             }
-            RenderMode.FSR1,
-            RenderMode.FSR1_DENOISE -> {
+            mode == RenderMode.FSR1 || mode == RenderMode.FSR1_DENOISE -> {
                 val easuInput = if (mode.usesNoiseReduction) {
                     drawDenoise()
                     denoisedTexture
                 } else {
                     inputTexture
                 }
-                drawEasuToTarget(easuInput, outputWidth, outputHeight)
+                drawEasuChain(easuInput)
                 if (targetSize == surfaceSize) {
                     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-                    GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
+                    GLES30.glViewport(0, 0, outputWidth, outputHeight)
                     drawRcas()
                 } else {
                     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, rcasFramebuffer)
@@ -278,6 +366,7 @@ internal class FsrDemoRenderer(
         framesInWindow += 1
         renderedFrames += 1L
         val now = System.nanoTime()
+        renderSubmitMs = (now - frameStartNs) / 1_000_000.0f
         if (fpsWindowStartNs == 0L) fpsWindowStartNs = now
         val elapsed = now - fpsWindowStartNs
         if (elapsed >= 1_000_000_000L) {
@@ -302,11 +391,7 @@ internal class FsrDemoRenderer(
         }
     }
 
-    private fun presentOriginal() {
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-        drawPresent(inputTexture, flipY = decodedVideoFrames == 0L)
-    }
+    private fun presentOriginal() = presentFitted(inputTexture, flipY = decodedVideoFrames == 0L)
 
     private fun drawDenoise() {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, denoiseFramebuffer)
@@ -323,37 +408,68 @@ internal class FsrDemoRenderer(
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
-    private fun drawEasuToTarget(sourceTexture: Int, outputWidth: Int, outputHeight: Int) {
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
-        GLES30.glViewport(0, 0, outputWidth, outputHeight)
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        drawEasu(sourceTexture)
-    }
+    private fun presentProcessed(texture: Int) = presentFitted(texture, flipY = false)
 
-    private fun presentProcessed(texture: Int) {
+    private fun presentFitted(texture: Int, flipY: Boolean) {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
-        drawPresent(texture, flipY = false)
+        GLES30.glClearColor(0f, 0f, 0f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        val viewport = RenderPolicy.contentViewport(surfaceSize, sourceSize)
+        if (viewport.width <= 0 || viewport.height <= 0) return
+        GLES30.glViewport(
+            viewport.left,
+            surfaceSize.height - viewport.top - viewport.height,
+            viewport.width,
+            viewport.height,
+        )
+        drawPresent(texture, flipY)
     }
 
-    private fun drawEasu(sourceTexture: Int) {
+    private fun drawEasuChain(firstInputTexture: Int) {
+        val stages = RenderPolicy.easuStages(sourceSize, targetSize)
+        check(stages.isNotEmpty()) { "No valid EASU stage for $sourceSize → $targetSize" }
+        var inputTextureForStage = firstInputTexture
+        var inputSize = sourceSize
+        stages.forEachIndexed { index, stageSize ->
+            val finalStage = index == stages.lastIndex
+            val (destinationTexture, destinationFramebuffer) = when {
+                finalStage -> outputTexture to framebuffer
+                index % 2 == 0 -> easuIntermediateTextureA to easuIntermediateFramebufferA
+                else -> easuIntermediateTextureB to easuIntermediateFramebufferB
+            }
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, destinationFramebuffer)
+            GLES30.glViewport(0, 0, stageSize.width, stageSize.height)
+            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+            drawEasu(inputTextureForStage, inputSize, stageSize, flipInputY = index == 0 && decodedVideoFrames == 0L)
+            inputTextureForStage = destinationTexture
+            inputSize = stageSize
+        }
+    }
+
+    private fun drawEasu(
+        sourceTexture: Int,
+        inputSize: PixelSize,
+        outputSize: PixelSize,
+        flipInputY: Boolean,
+    ) {
         GLES30.glUseProgram(easuProgram)
         bindQuad(easuProgram)
         bindTexture(sourceTexture)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(easuProgram, "uInput"), 0)
         GLES30.glUniform2f(
             GLES30.glGetUniformLocation(easuProgram, "uInputSize"),
-            sourceSize.width.toFloat(),
-            sourceSize.height.toFloat(),
+            inputSize.width.toFloat(),
+            inputSize.height.toFloat(),
         )
         GLES30.glUniform2f(
             GLES30.glGetUniformLocation(easuProgram, "uOutputSize"),
-            targetSize.width.toFloat(),
-            targetSize.height.toFloat(),
+            outputSize.width.toFloat(),
+            outputSize.height.toFloat(),
         )
         GLES30.glUniform1i(
             GLES30.glGetUniformLocation(easuProgram, "uFlipInputY"),
-            if (decodedVideoFrames == 0L) 1 else 0,
+            if (flipInputY) 1 else 0,
         )
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
@@ -405,6 +521,10 @@ internal class FsrDemoRenderer(
         if (denoiseFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(denoiseFramebuffer), 0)
         if (framebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(framebuffer), 0)
         if (rcasFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(rcasFramebuffer), 0)
+        if (easuIntermediateTextureA != 0) GLES30.glDeleteTextures(1, intArrayOf(easuIntermediateTextureA), 0)
+        if (easuIntermediateTextureB != 0) GLES30.glDeleteTextures(1, intArrayOf(easuIntermediateTextureB), 0)
+        if (easuIntermediateFramebufferA != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(easuIntermediateFramebufferA), 0)
+        if (easuIntermediateFramebufferB != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(easuIntermediateFramebufferB), 0)
 
         inputTexture = createChartTexture(sourceSize)
         sourceFramebuffer = createFramebuffer(inputTexture)
@@ -418,6 +538,25 @@ internal class FsrDemoRenderer(
         } else {
             rcasTexture = 0
             rcasFramebuffer = 0
+        }
+
+        val intermediateStages = RenderPolicy.easuStages(sourceSize, targetSize).dropLast(1)
+        if (intermediateStages.isNotEmpty()) {
+            val intermediateSize = PixelSize(
+                intermediateStages.maxOf { it.width },
+                intermediateStages.maxOf { it.height },
+            )
+            easuIntermediateTextureA = createEmptyTexture(intermediateSize, GLES30.GL_NEAREST)
+            easuIntermediateFramebufferA = createFramebuffer(easuIntermediateTextureA)
+            if (intermediateStages.size > 1) {
+                easuIntermediateTextureB = createEmptyTexture(intermediateSize, GLES30.GL_NEAREST)
+                easuIntermediateFramebufferB = createFramebuffer(easuIntermediateTextureB)
+            }
+        } else {
+            easuIntermediateTextureA = 0
+            easuIntermediateTextureB = 0
+            easuIntermediateFramebufferA = 0
+            easuIntermediateFramebufferB = 0
         }
     }
 
@@ -442,7 +581,11 @@ internal class FsrDemoRenderer(
         val surfaceTexture = SurfaceTexture(ids[0])
         surfaceTexture.setDefaultBufferSize(source.size.width, source.size.height)
         surfaceTexture.setOnFrameAvailableListener(
-            { frameAvailable = true },
+            {
+                totalVideoFrameCallbacks.incrementAndGet()
+                pendingVideoFrameCallbacks.incrementAndGet()
+                frameAvailable = true
+            },
             Handler(Looper.getMainLooper()),
         )
         externalInputTexture = ids[0]
@@ -450,6 +593,13 @@ internal class FsrDemoRenderer(
         surfaceVideoSource = source
         frameAvailable = false
         decodedVideoFrames = 0L
+        totalVideoFrameCallbacks.set(0L)
+        pendingVideoFrameCallbacks.set(0L)
+        estimatedSkippedFrames = 0L
+        inputFps = 0f
+        inputFpsWindowStartNs = 0L
+        inputFpsWindowCount = 0L
+        decoderLagEvents.set(0L)
         videoInputError = null
         onVideoSurfaceAvailable(surfaceTexture, source)
     }
@@ -458,9 +608,23 @@ internal class FsrDemoRenderer(
         if (!frameAvailable) return
         val surfaceTexture = decodedSurfaceTexture ?: return
         frameAvailable = false
+        val callbacks = pendingVideoFrameCallbacks.getAndSet(0L)
+        if (callbacks <= 0L) return
+        if (callbacks > 1L) estimatedSkippedFrames += callbacks - 1L
         try {
             surfaceTexture.updateTexImage()
             surfaceTexture.getTransformMatrix(textureTransform)
+            val timestampNs = surfaceTexture.timestamp
+            if (timestampNs > 0L) {
+                if (inputFpsWindowStartNs == 0L) inputFpsWindowStartNs = timestampNs
+                inputFpsWindowCount += 1L
+                val elapsedNs = timestampNs - inputFpsWindowStartNs
+                if (elapsedNs >= 1_000_000_000L) {
+                    inputFps = inputFpsWindowCount * 1_000_000_000.0f / elapsedNs.toFloat()
+                    inputFpsWindowStartNs = timestampNs
+                    inputFpsWindowCount = 0L
+                }
+            }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sourceFramebuffer)
             GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
             GLES30.glUseProgram(externalCopyProgram)

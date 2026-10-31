@@ -21,6 +21,7 @@ for attempt in $(seq 1 90); do
 done
 
 adb install -r "$apk_path"
+adb shell pm clear "$package_name" >/dev/null
 adb logcat -c
 adb shell am force-stop "$package_name"
 adb shell am start -W -n "$activity_name"
@@ -29,7 +30,9 @@ wait_for_log_marker() {
     marker="$1"
     description="$2"
     for attempt in $(seq 1 90); do
-        if adb logcat -d -s NKScaleTV:I | grep -Fq "$marker"; then
+        local log_output
+        log_output="$(adb logcat -d -s NKScaleTV:I)"
+        if grep -Fq "$marker" <<< "$log_output"; then
             return 0
         fi
         sleep 1
@@ -67,7 +70,7 @@ adb exec-out screencap -p > "$output_dir/video-motion-a.png"
 sleep 1
 adb exec-out screencap -p > "$output_dir/video-motion-b.png"
 
-# Initial focus is the algorithm control. DOWN reaches the file picker, second DOWN the pause control; two captures after resume prove playback advances again.
+# Initial focus is BALANCED. DOWN reaches the local-video picker, second DOWN the pause control; two captures after resume prove playback advances again.
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_CENTER
@@ -80,47 +83,81 @@ sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_occurrences 'video=paused' 2 'second pause after resume-motion check'
-# Return focus from the pause control through the local-video picker to the algorithm control before comparing filter modes.
+# Return focus from the pause control through the local-video button to the selected preset before comparing filter modes.
 adb shell input keyevent KEYCODE_DPAD_UP
 adb shell input keyevent KEYCODE_DPAD_UP
 sleep 1
 adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 
-# Cycle FSR1 → FSR1+NR → EASU-only with the TV remote on one paused frame.
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=fsr1_denoise' 'FSR1 plus edge-aware NR mode'
-sleep 1
-adb exec-out screencap -p > "$output_dir/fsr1-nr-paused.png"
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=easu_only' 'EASU-only mode'
-sleep 1
-adb exec-out screencap -p > "$output_dir/easu-only-paused.png"
-
-# Select Bilinear Original.
+# The smoke starts with BALANCED selected. Exercise QUALITY, BALANCED, PERFORMANCE and OFF using the TV remote.
+adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=bilinear' 'Bilinear Original mode'
+wait_for_log_marker 'mode=fsr1_denoise' 'QUALITY (EASU + NR + RCAS)'
 sleep 1
-adb exec-out screencap -p > "$output_dir/bilinear-paused.png"
-
-# Return through EASU-only to FSR1, then change RCAS from 8 to 9 and capture the result.
+adb exec-out screencap -p > "$output_dir/quality-paused.png"
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=easu_only' 'revisit EASU-only mode'
+wait_for_log_occurrences 'preset=balanced' 2 'return to BALANCED'
+adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=fsr1' 'return to FSR1 for sharpness test'
+wait_for_log_marker 'mode=easu_only' 'PERFORMANCE (EASU only)'
+sleep 1
+adb exec-out screencap -p > "$output_dir/performance-paused.png"
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'preset=balanced' 3 'return to BALANCED before OFF'
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'mode=fsr1_denoise' 2 'revisit QUALITY'
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'mode=bilinear' 'OFF preset'
+sleep 1
+adb exec-out screencap -p > "$output_dir/off-paused.png"
+
+# Return to BALANCED, set sharpness to 9, then restart and assert both settings reload.
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'preset=balanced' 4 'restore BALANCED for RCAS setting test'
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 sleep 1
 adb exec-out screencap -p > "$output_dir/fsr1-sharpness9.png"
+adb shell input keyevent KEYCODE_DPAD_DOWN
+adb shell input keyevent KEYCODE_DPAD_CENTER
+sleep 1
+adb exec-out screencap -p > "$output_dir/diagnostics-dialog.png"
+adb shell uiautomator dump /sdcard/nkscale-diagnostics.xml >/dev/null 2>&1
+adb pull /sdcard/nkscale-diagnostics.xml "$output_dir/diagnostics-dialog.xml" >/dev/null 2>&1
+if ! grep -Fq 'NightKnight · Diagnostics' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'EASU pass count' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'RGBA render-target estimate' "$output_dir/diagnostics-dialog.xml"; then
+    echo "D-pad diagnostics dialog did not expose its title and renderer metrics" >&2
+    cat "$output_dir/diagnostics-dialog.xml" >&2
+    exit 1
+fi
+adb shell input keyevent KEYCODE_DPAD_CENTER
+adb shell am force-stop "$package_name"
+adb shell am start -W -n "$activity_name"
+wait_for_log_marker 'settings=loaded preset=balanced sharpness=9' 'persisted preset and sharpness after process restart'
+wait_for_log_marker 'video=playing source=' 'packaged video resume after restart'
+
+# Save the settings/preset navigation log before local-file scenarios replace the current logcat buffer.
+adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/preset-and-settings-logcat.txt"
+
+# Exercise actual local selection/playback at 25/30/50/60 fps and portrait/576p aspect shapes.
+bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
-for marker in 'shaders=ready' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'render_completion_ms=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9'; do
-    if ! grep -Fq "$marker" "$output_dir/logcat.txt"; then
-        echo "Expected emulator runtime marker was not observed: $marker" >&2
-        cat "$output_dir/logcat.txt" >&2
+for marker in 'shaders=ready' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'render_completion_ms=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9'; do
+    if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
+        echo "Expected preset/settings emulator marker was not observed: $marker" >&2
+        cat "$output_dir/preset-and-settings-logcat.txt" >&2
         exit 1
     fi
 done
@@ -145,9 +182,9 @@ crop_chart_region "$output_dir/video-motion-b.png" "$output_dir/video-motion-b.r
 crop_chart_region "$output_dir/video-resumed-a.png" "$output_dir/video-resumed-a.rgb"
 crop_chart_region "$output_dir/video-resumed-b.png" "$output_dir/video-resumed-b.rgb"
 crop_chart_region "$output_dir/fsr1-paused.png" "$output_dir/fsr1-paused.rgb"
-crop_chart_region "$output_dir/fsr1-nr-paused.png" "$output_dir/fsr1-nr-paused.rgb"
-crop_chart_region "$output_dir/easu-only-paused.png" "$output_dir/easu-only-paused.rgb"
-crop_chart_region "$output_dir/bilinear-paused.png" "$output_dir/bilinear-paused.rgb"
+crop_chart_region "$output_dir/quality-paused.png" "$output_dir/quality-paused.rgb"
+crop_chart_region "$output_dir/performance-paused.png" "$output_dir/performance-paused.rgb"
+crop_chart_region "$output_dir/off-paused.png" "$output_dir/off-paused.rgb"
 crop_chart_region "$output_dir/fsr1-sharpness9.png" "$output_dir/fsr1-sharpness9.rgb"
 
 assert_different_pixels() {
@@ -164,26 +201,26 @@ assert_different_pixels "$output_dir/video-motion-a.rgb" "$output_dir/video-moti
     "Decoded H.264 frame captures did not change across one second of playback"
 assert_different_pixels "$output_dir/video-resumed-a.rgb" "$output_dir/video-resumed-b.rgb" \
     "Decoded H.264 frame captures did not resume advancing after the remote Play control"
-assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/easu-only-paused.rgb" \
-    "EASU-only and bilinear captures were identical"
-assert_different_pixels "$output_dir/bilinear-paused.rgb" "$output_dir/fsr1-paused.rgb" \
-    "FSR1 EASU+RCAS and bilinear captures were identical"
-assert_different_pixels "$output_dir/easu-only-paused.rgb" "$output_dir/fsr1-paused.rgb" \
-    "RCAS did not change the EASU-only result"
-assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-nr-paused.rgb" \
-    "FSR1 and edge-aware NR variants were identical"
+assert_different_pixels "$output_dir/off-paused.rgb" "$output_dir/performance-paused.rgb" \
+    "PERFORMANCE (EASU) and OFF (bilinear) captures were identical"
+assert_different_pixels "$output_dir/off-paused.rgb" "$output_dir/fsr1-paused.rgb" \
+    "BALANCED (EASU+RCAS) and OFF (bilinear) captures were identical"
+assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/quality-paused.rgb" \
+    "QUALITY and BALANCED captures were identical"
 assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-sharpness9.rgb" \
-    "FSR1 sharpness 8 and 9 produced identical output"
+    "BALANCED sharpness 8 and 9 produced identical output"
 
 sha256sum \
     "$output_dir/video-motion-a.png" \
     "$output_dir/video-motion-b.png" \
     "$output_dir/video-resumed-a.png" \
     "$output_dir/video-resumed-b.png" \
-    "$output_dir/bilinear-paused.png" \
-    "$output_dir/easu-only-paused.png" \
+    "$output_dir/off-paused.png" \
+    "$output_dir/performance-paused.png" \
+    "$output_dir/quality-paused.png" \
     "$output_dir/fsr1-paused.png" \
-    "$output_dir/fsr1-nr-paused.png" \
     "$output_dir/fsr1-sharpness9.png" \
-    "$output_dir/logcat.txt"
-echo "Android TV emulator four-mode H.264/GLES smoke passed on SwiftShader. Pause/resume motion, remote filters and sharpness were exercised. Pixel differences are not quality scores. This is emulator-only evidence, not target GPU or physical-TV validation."
+    "$output_dir/preset-and-settings-logcat.txt" \
+    "$output_dir/logcat.txt" \
+    "$output_dir/local-media/local-input-playback.txt"
+echo "Android TV emulator smoke passed: four render presets, persisted settings, packaged playback and automated local Photo Picker playback across 25/30/50/60 fps sources. SwiftShader emulator only; no TCL hardware validation. Pixel differences are not quality scores."

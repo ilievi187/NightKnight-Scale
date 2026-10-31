@@ -22,14 +22,46 @@ class RenderPolicyTest {
     }
 
     @Test
-    fun processedTargetStaysWithinTwoTimesPerAxisOfDecodedSource() {
+    fun processedTargetReachesThe4kSurfaceWhenTheDeviceAllowsIt() {
         assertEquals(
-            PixelSize(960, 540),
+            PixelSize(3840, 2160),
             RenderPolicy.targetForSource(
                 surface = PixelSize(3840, 2160),
                 source = PixelSize(480, 270),
                 maxTextureSize = 4096,
             ),
+        )
+    }
+
+    @Test
+    fun sourceAwareTargetPreservesTheSourceAspectRatio() {
+        assertEquals(
+            PixelSize(1440, 1080),
+            RenderPolicy.targetForSource(
+                surface = PixelSize(1920, 1080),
+                source = PixelSize(640, 480),
+                maxTextureSize = 4096,
+            ),
+        )
+    }
+
+    @Test
+    fun fitViewportLetterboxesFourByThreeInsideSixteenByNine() {
+        assertEquals(
+            PixelRect(240, 0, 1440, 1080),
+            RenderPolicy.contentViewport(PixelSize(1920, 1080), PixelSize(640, 480)),
+        )
+    }
+
+    @Test
+    fun easuStagesNeverExceedTwoTimesPerAxisAndReachFourKFromSd() {
+        assertEquals(
+            listOf(PixelSize(960, 540), PixelSize(1920, 1080), PixelSize(3840, 2160)),
+            RenderPolicy.easuStages(PixelSize(480, 270), PixelSize(3840, 2160)),
+        )
+        assertEquals(
+            listOf(PixelSize(3840, 2160)),
+            RenderPolicy.easuStages(PixelSize(1920, 1080), PixelSize(3840, 2160)),
         )
     }
 
@@ -43,6 +75,27 @@ class RenderPolicyTest {
                 maxTextureSize = 4096,
             ),
         )
+    }
+
+    @Test
+    fun estimatedTextureAllocationIncludesSourceOutputAndPingPongTargets() {
+        assertEquals(
+            13_824_000L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source = PixelSize(640, 360),
+                target = PixelSize(1920, 1080),
+                surface = PixelSize(1920, 1080),
+            ),
+        )
+    }
+
+    @Test
+    fun largeSurfaceTargetIsReducedToTheRgbaTextureWorkingSetBudget() {
+        val source = PixelSize(320, 240)
+        val surface = PixelSize(4096, 4096)
+        val target = RenderPolicy.targetForSource(surface, source, 4096)
+        assertEquals(source.width.toFloat() / source.height, target.width.toFloat() / target.height, 0.002f)
+        assert(RenderPolicy.estimatedRgbaTextureBytes(source, target, surface) <= RenderPolicy.MAX_RGBA_TEXTURE_BYTES)
     }
 
     @Test

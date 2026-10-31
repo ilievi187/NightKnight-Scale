@@ -43,11 +43,12 @@ class MainActivity : Activity() {
     private lateinit var metricsSummary: TextView
     private lateinit var sharpnessSummary: TextView
     private lateinit var videoSummary: TextView
-    private lateinit var originalButton: Button
-    private lateinit var algorithmButton: Button
     private lateinit var videoButton: Button
     private lateinit var openVideoButton: Button
+    private lateinit var diagnosticsButton: Button
     private lateinit var sharpnessSlider: SeekBar
+    private val presetButtons = linkedMapOf<UpscalePreset, Button>()
+    private var selectedPreset = UpscalePreset.BALANCED
     private var selectedLocalVideoUri: Uri? = null
     private var decodedVideoSize: PixelSize? = null
     private var currentVideoSurfaceTexture: SurfaceTexture? = null
@@ -56,6 +57,7 @@ class MainActivity : Activity() {
     private var mediaPlayer: MediaPlayer? = null
     private var activityResumed = false
     private var videoPlaybackError: String? = null
+    private var decoderDescription = "Android MediaPlayer · decoder selected by platform"
 
     private val refreshDiagnostics = object : Runnable {
         override fun run() {
@@ -67,11 +69,15 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         selectedLocalVideoUri = preferences.getString("local_video_uri", null)?.let(Uri::parse)
+        selectedPreset = UpscalePreset.fromId(preferences.getString("upscale_preset", null))
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
             mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
         }
+        renderer.mode = selectedPreset.renderMode
+        renderer.sharpnessProgress = preferences.getInt("sharpness_progress", selectedPreset.defaultSharpness)
+        Log.i(TAG, "settings=loaded preset=${selectedPreset.id} sharpness=${renderer.sharpnessProgress}")
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setEGLConfigChooser(8, 8, 8, 8, 0, 0)
@@ -96,7 +102,8 @@ class MainActivity : Activity() {
         root.addView(buildControlPanel(), controlPanelLayoutParams())
         setContentView(root)
         enterImmersiveMode()
-        algorithmButton.requestFocus()
+        presetButtons[selectedPreset]?.requestFocus()
+        updatePresetButtons()
         logRenderMode(renderer.mode)
     }
 
@@ -132,22 +139,38 @@ class MainActivity : Activity() {
         if (requestCode != REQUEST_OPEN_VIDEO || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val takeFlags = data.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-        runCatching { contentResolver.takePersistableUriPermission(uri, takeFlags) }
-            .onFailure { Log.w(TAG, "video=persist-permission-unavailable", it) }
+        val grantPersists = takeFlags != 0 && runCatching {
+            contentResolver.takePersistableUriPermission(uri, takeFlags)
+            true
+        }.getOrDefault(false)
         stopVideoPlayback()
         selectedLocalVideoUri = uri
         decodedVideoSize = null
-        preferences.edit().putString("local_video_uri", uri.toString()).apply()
+        preferences.edit().apply {
+            if (grantPersists) putString("local_video_uri", uri.toString()) else remove("local_video_uri")
+        }.apply()
         videoSummary.text = "Selected local video · opening decoder…"
         if (activityResumed) startVideoPlaybackIfReady()
     }
 
     private fun openLocalVideoPicker() {
-        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+        val openDocument = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(android.content.Intent.CATEGORY_OPENABLE)
             type = "video/*"
             addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                 android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        val handler = packageManager.resolveActivity(openDocument, 0)?.activityInfo
+        val intent = if (handler == null || handler.name.contains("DocumentsStub")) {
+            Log.w(TAG, "picker=saf-unavailable fallback=photo-picker")
+            android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).apply {
+                addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                type = "video/*"
+                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        } else {
+            Log.i(TAG, "picker=saf uri-grant")
+            openDocument
         }
         startActivityForResult(intent, REQUEST_OPEN_VIDEO)
     }
@@ -160,7 +183,7 @@ class MainActivity : Activity() {
     private fun buildControlPanel(): View {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(28), dp(22), dp(28), dp(20))
+            setPadding(dp(28), dp(18), dp(28), dp(14))
             background = roundedBackground(Color.argb(232, 10, 21, 37), Color.rgb(39, 69, 93), dp(18))
             elevation = dp(8).toFloat()
         }
@@ -183,14 +206,16 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(15), 0, dp(4))
         }
-        originalButton = controlButton(RenderMode.BILINEAR.label) { setRenderMode(RenderMode.BILINEAR) }.apply {
-            id = View.generateViewId()
+        for (preset in UpscalePreset.entries) {
+            val button = controlButton(preset.label) { setPreset(preset) }.apply {
+                id = View.generateViewId()
+                contentDescription = "${preset.label} upscaling preset"
+            }
+            presetButtons[preset] = button
+            modeRow.addView(button, LinearLayout.LayoutParams(0, dp(54), 1f).apply {
+                if (preset != UpscalePreset.OFF) marginStart = dp(6)
+            })
         }
-        algorithmButton = controlButton("Next: ${renderer.mode.nextAlgorithm().label}") { cycleAlgorithmMode() }.apply {
-            id = View.generateViewId()
-        }
-        modeRow.addView(originalButton, weightedButtonParams())
-        modeRow.addView(algorithmButton, weightedButtonParams(startMargin = dp(10)))
         panel.addView(modeRow)
 
         videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
@@ -228,26 +253,45 @@ class MainActivity : Activity() {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     renderer.sharpnessProgress = progress
                     sharpnessSummary.text = "RCAS sharpness: $progress / 20  ·  0 strongest"
-                    if (fromUser) Log.i(TAG, "sharpness=$progress")
+                    if (fromUser) {
+                        val saved = preferences.edit().putInt("sharpness_progress", progress).commit()
+                        if (!saved) Log.e(TAG, "settings=sharpness-save-failed")
+                        Log.i(TAG, "sharpness=$progress")
+                    }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         }
-        originalButton.nextFocusDownId = openVideoButton.id
-        originalButton.nextFocusRightId = algorithmButton.id
-        algorithmButton.nextFocusDownId = openVideoButton.id
-        algorithmButton.nextFocusLeftId = originalButton.id
-        openVideoButton.nextFocusUpId = algorithmButton.id
+        presetButtons.values.forEach { button ->
+            button.nextFocusDownId = openVideoButton.id
+        }
+        openVideoButton.nextFocusUpId = presetButtons[selectedPreset]?.id ?: View.NO_ID
         openVideoButton.nextFocusDownId = videoButton.id
         videoButton.nextFocusUpId = openVideoButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
         sharpnessSlider.nextFocusUpId = videoButton.id
         panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
 
-        metricsSummary = text("Render FPS: waiting  ·  frame completion sample: waiting", 12, Color.rgb(169, 187, 207), top = 8)
-        panel.addView(metricsSummary)
-        panel.addView(text("D-pad: select a mode or focus the sharpness slider; LEFT / RIGHT adjusts it.", 11, Color.rgb(130, 153, 176), top = 8))
+        metricsSummary = text("Frame metrics pending…", 12, Color.rgb(169, 187, 207), top = 8)
+        val diagnosticsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        diagnosticsRow.addView(metricsSummary, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        diagnosticsButton = controlButton("Diagnostics…") { showDiagnostics() }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(44)
+            textSize = 12f
+            contentDescription = "Open detailed video and renderer diagnostics"
+        }
+        diagnosticsRow.addView(diagnosticsButton, LinearLayout.LayoutParams(dp(160), dp(44)).apply {
+            marginStart = dp(8)
+        })
+        panel.addView(diagnosticsRow)
+        sharpnessSlider.nextFocusDownId = diagnosticsButton.id
+        diagnosticsButton.nextFocusUpId = sharpnessSlider.id
+        diagnosticsButton.nextFocusDownId = presetButtons[selectedPreset]?.id ?: View.NO_ID
         return panel
     }
 
@@ -263,8 +307,7 @@ class MainActivity : Activity() {
         stateListAnimator = null
         background = roundedBackground(Color.rgb(23, 39, 58), Color.rgb(60, 85, 108), dp(10))
         setOnFocusChangeListener { view, focused ->
-            val selected = (view === algorithmButton && renderer.mode != RenderMode.BILINEAR) ||
-                (view === originalButton && renderer.mode == RenderMode.BILINEAR)
+            val selected = presetButtons.any { (preset, button) -> button === view && preset == selectedPreset }
             view.background = roundedBackground(
                 if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (focused) Color.rgb(66, 216, 237) else if (selected) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
@@ -275,34 +318,32 @@ class MainActivity : Activity() {
         setOnClickListener { action() }
     }
 
-    private fun updateModeButtons() {
-        if (!::originalButton.isInitialized || !::algorithmButton.isInitialized) return
-        val original = renderer.mode == RenderMode.BILINEAR
-        algorithmButton.text = "Next: ${renderer.mode.nextAlgorithm().label}"
-        originalButton.background = roundedBackground(
-            if (original) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
-            if (original || originalButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
-            dp(10),
-            if (originalButton.hasFocus()) dp(3) else dp(1),
-        )
-        algorithmButton.background = roundedBackground(
-            if (!original) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
-            if (!original || algorithmButton.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
-            dp(10),
-            if (algorithmButton.hasFocus()) dp(3) else dp(1),
-        )
+    private fun updatePresetButtons() {
+        if (presetButtons.isEmpty()) return
+        presetButtons.forEach { (preset, button) ->
+            val selected = preset == selectedPreset
+            button.background = roundedBackground(
+                if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+                if (selected || button.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
+                dp(10),
+                if (button.hasFocus()) dp(3) else dp(1),
+            )
+        }
     }
 
-    private fun setRenderMode(mode: RenderMode) {
-        renderer.mode = mode
-        logRenderMode(mode)
-        updateModeButtons()
+    private fun setPreset(preset: UpscalePreset) {
+        selectedPreset = preset
+        renderer.mode = preset.renderMode
+        val saved = preferences.edit().putString("upscale_preset", preset.id).commit()
+        if (!saved) Log.e(TAG, "settings=preset-save-failed id=${preset.id}")
+        if (::openVideoButton.isInitialized) openVideoButton.nextFocusUpId = presetButtons[preset]?.id ?: View.NO_ID
+        if (::diagnosticsButton.isInitialized) diagnosticsButton.nextFocusDownId = presetButtons[preset]?.id ?: View.NO_ID
+        logRenderMode(preset.renderMode)
+        updatePresetButtons()
     }
-
-    private fun cycleAlgorithmMode() = setRenderMode(renderer.mode.nextAlgorithm())
 
     private fun logRenderMode(mode: RenderMode) {
-        Log.i(TAG, "mode=${mode.id} output=${if (mode.usesEasu) "enhanced" else "bilinear"}")
+        Log.i(TAG, "preset=${selectedPreset.id} mode=${mode.id}")
     }
 
     private fun handleVideoSurfaceAvailable(surfaceTexture: SurfaceTexture, source: VideoTestSource) {
@@ -346,9 +387,21 @@ class MainActivity : Activity() {
         }
         player.setOnVideoSizeChangedListener { _, width, height ->
             decodedVideoSize = PixelSize(width, height)
+            val mime = selectedLocalVideoUri?.let { contentResolver.getType(it) } ?: "video/mp4"
+            decoderDescription = "MediaPlayer · platform codec · $mime · ${width}×$height"
             glView.queueEvent { renderer.updateDecodedVideoSize(width, height) }
-            Log.i(TAG, "video=decoded-size ${width}x$height input=${inputLabel(source)}")
+            Log.i(TAG, "video=decoded-size ${width}x$height input=${inputLabel(source)} mime=$mime")
             videoSummary.text = "Playing ${inputLabel(source)} · decoded ${width}×$height into GLES"
+        }
+        player.setOnInfoListener { _, what, extra ->
+            when (what) {
+                MediaPlayer.MEDIA_INFO_VIDEO_TRACK_LAGGING -> {
+                    renderer.recordDecoderLag()
+                    Log.w(TAG, "decoder=track-lagging extra=$extra")
+                }
+                MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START -> Log.i(TAG, "decoder=video-rendering-start")
+            }
+            false
         }
         player.setOnErrorListener { _, what, extra ->
             handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer error $what/$extra"))
@@ -420,7 +473,7 @@ class MainActivity : Activity() {
     private fun updateDiagnostics() {
         if (!::renderer.isInitialized) return
         val state = renderer.snapshot()
-        modeSummary.text = state.error ?: state.mode.summary
+        modeSummary.text = state.error ?: "${selectedPreset.label} · ${state.mode.summary}"
 
         val displayMode = currentDisplayMode()
         val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
@@ -440,15 +493,48 @@ class MainActivity : Activity() {
             state.videoInputError != null -> "Video input error: ${state.videoInputError}. Generated chart is retained as fallback."
             state.decodedVideoFrames > 0L -> {
                 val dimensions = decodedVideoSize?.let { " · ${it.width}×${it.height}" } ?: ""
-                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · uploaded frames ${state.decodedVideoFrames}"
+                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · uploads ${state.decodedVideoFrames}/${state.videoFrameCallbacks} callbacks · skipped≈${state.estimatedSkippedFrames}"
             }
             else -> "Waiting for the first decoded frame from ${state.videoSource}"
         }
 
-        val fpsText = if (state.fps > 0f) "${"%.1f".format(state.fps)} fps" else "waiting"
-        val completionText = state.synchronizedFrameMs?.let { "${"%.2f".format(it)} ms" } ?: "waiting"
-        metricsSummary.text = "Render FPS: $fpsText  ·  submit→GPU-finish sample: $completionText"
-        updateModeButtons()
+        val renderFps = if (state.fps > 0f) "%.1f".format(state.fps) else "—"
+        val inputFps = if (state.inputFps > 0f) "%.1f".format(state.inputFps) else "—"
+        val frameMs = state.averageFrameIntervalMs?.let { "%.1f".format(it) } ?: "—"
+        val submitMs = state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"
+        metricsSummary.text = "Render $renderFps fps · OES upload $inputFps fps · frame avg $frameMs ms · submit $submitMs ms"
+        updatePresetButtons()
+    }
+
+    private fun showDiagnostics() {
+        val state = renderer.snapshot()
+        val actualSource = decodedVideoSize ?: state.source
+        val viewport = RenderPolicy.contentViewport(state.surface, actualSource)
+        val message = buildString {
+            appendLine("Preset: ${selectedPreset.label} (${state.mode.id})")
+            appendLine("Input: $actualSource · output: ${state.processedTarget} · surface: ${state.surface}")
+            appendLine("EASU pass count: ${state.easuStageCount} · aspect-fit viewport: ${viewport.width}×${viewport.height} at ${viewport.left},${viewport.top}")
+            val textureMiB = state.estimatedRgbaTextureBytes / (1024f * 1024f)
+            val memoryWarning = if (state.estimatedRgbaTextureBytes > RenderPolicy.MAX_RGBA_TEXTURE_BYTES) " · OVER budget (source memory irreducible)" else ""
+            appendLine("RGBA render-target estimate: ${"%.1f".format(textureMiB)} MiB / 128 MiB budget$memoryWarning · excludes decoder/driver memory")
+            appendLine("Decoder path: $decoderDescription")
+            appendLine("Input frame callbacks: ${state.videoFrameCallbacks} · uploaded: ${state.decodedVideoFrames}")
+            appendLine("Coalesced callbacks (estimated skipped): ${state.estimatedSkippedFrames}")
+            appendLine("Decoder-reported lag events: ${state.decoderLagEvents}")
+            appendLine("Input callback cadence: ${"%.2f".format(state.inputFps)} fps")
+            appendLine("Render callback cadence: ${"%.2f".format(state.fps)} fps")
+            appendLine("Frame interval ms: last=${state.lastFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, avg=${state.averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, max=${state.maximumFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}")
+            appendLine("CPU GL-submit time: ${state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            appendLine("Sparse submit-to-glFinish sample: ${state.synchronizedFrameMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            appendLine("Renderer: ${state.gpuRenderer}")
+            appendLine("GLES: ${state.glVersion} · max texture ${state.maxTextureSize}")
+            append("Skipped-frame and FPS values are renderer callback estimates, not hardware decoder counters or display-present timing.")
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("NightKnight · Diagnostics")
+            .setMessage(message)
+            .setPositiveButton("Close", null)
+            .show()
     }
 
     @Suppress("DEPRECATION")
@@ -486,14 +572,6 @@ class MainActivity : Activity() {
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 )
         }
-    }
-
-    private fun weightedButtonParams(startMargin: Int = 0) = LinearLayout.LayoutParams(
-        0,
-        dp(54),
-        1f,
-    ).apply {
-        marginStart = startMargin
     }
 
     private fun controlPanelLayoutParams() = FrameLayout.LayoutParams(dp(680), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
