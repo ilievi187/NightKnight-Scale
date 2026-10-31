@@ -22,6 +22,30 @@ class RenderPolicyTest {
     }
 
     @Test
+    fun processedTargetStaysWithinTwoTimesPerAxisOfDecodedSource() {
+        assertEquals(
+            PixelSize(960, 540),
+            RenderPolicy.targetForSource(
+                surface = PixelSize(3840, 2160),
+                source = PixelSize(480, 270),
+                maxTextureSize = 4096,
+            ),
+        )
+    }
+
+    @Test
+    fun sourceConstrainedTargetStillFillsSmallDisplaysWhenWithinTheFsrRange() {
+        assertEquals(
+            PixelSize(1280, 720),
+            RenderPolicy.targetForSource(
+                surface = PixelSize(1280, 720),
+                source = PixelSize(640, 360),
+                maxTextureSize = 4096,
+            ),
+        )
+    }
+
+    @Test
     fun sharpnessSliderUsesFsrStopsInReverseStrengthOrder() {
         assertEquals(1.0f, RenderPolicy.rcasScaleFor(0), 0.0001f)
         assertEquals(0.03125f, RenderPolicy.rcasScaleFor(20), 0.0001f)

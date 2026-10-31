@@ -7,6 +7,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.media.MediaPlayer
+import android.net.Uri
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
@@ -29,9 +30,11 @@ import java.io.File
 class MainActivity : Activity() {
     private companion object {
         const val TAG = "NKScaleTV"
+        const val REQUEST_OPEN_VIDEO = 4102
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val preferences by lazy { getSharedPreferences("tv_settings", MODE_PRIVATE) }
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FsrDemoRenderer
     private lateinit var modeSummary: TextView
@@ -43,7 +46,10 @@ class MainActivity : Activity() {
     private lateinit var originalButton: Button
     private lateinit var algorithmButton: Button
     private lateinit var videoButton: Button
+    private lateinit var openVideoButton: Button
     private lateinit var sharpnessSlider: SeekBar
+    private var selectedLocalVideoUri: Uri? = null
+    private var decodedVideoSize: PixelSize? = null
     private var currentVideoSurfaceTexture: SurfaceTexture? = null
     private var currentVideoSource: VideoTestSource? = null
     private var videoSurface: Surface? = null
@@ -60,6 +66,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        selectedLocalVideoUri = preferences.getString("local_video_uri", null)?.let(Uri::parse)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
@@ -119,6 +126,32 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    @Deprecated("Deprecated by platform API; kept to avoid adding an AndroidX Activity dependency to this prototype.")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_OPEN_VIDEO || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val takeFlags = data.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+        runCatching { contentResolver.takePersistableUriPermission(uri, takeFlags) }
+            .onFailure { Log.w(TAG, "video=persist-permission-unavailable", it) }
+        stopVideoPlayback()
+        selectedLocalVideoUri = uri
+        decodedVideoSize = null
+        preferences.edit().putString("local_video_uri", uri.toString()).apply()
+        videoSummary.text = "Selected local video · opening decoder…"
+        if (activityResumed) startVideoPlaybackIfReady()
+    }
+
+    private fun openLocalVideoPicker() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "video/*"
+            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(intent, REQUEST_OPEN_VIDEO)
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) enterImmersiveMode()
@@ -134,7 +167,7 @@ class MainActivity : Activity() {
 
         panel.addView(text("NIGHTKNIGHT SCALE TV", 24, Color.rgb(231, 242, 255), bold = true))
         panel.addView(text("GPU UPSCALING LAB  •  FULLSCREEN TEST", 12, Color.rgb(66, 216, 237), bold = true, top = 3))
-        panel.addView(text("Looping deterministic H.264 test video", 14, Color.rgb(169, 187, 207), top = 12))
+        panel.addView(text("Packaged clip or user-selected local video", 14, Color.rgb(169, 187, 207), top = 12))
 
         modeSummary = text("Starting OpenGL ES…", 15, Color.WHITE, bold = true, top = 13)
         panel.addView(modeSummary)
@@ -162,6 +195,15 @@ class MainActivity : Activity() {
 
         videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
         panel.addView(videoSummary)
+        openVideoButton = controlButton("Open local video…") { openLocalVideoPicker() }.apply {
+            id = View.generateViewId()
+        }
+        panel.addView(
+            openVideoButton,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                topMargin = dp(5)
+            },
+        )
         videoButton = controlButton("Video loading…") {
             toggleVideoPlayback()
         }.apply {
@@ -192,11 +234,13 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         }
-        originalButton.nextFocusDownId = videoButton.id
+        originalButton.nextFocusDownId = openVideoButton.id
         originalButton.nextFocusRightId = algorithmButton.id
-        algorithmButton.nextFocusDownId = videoButton.id
+        algorithmButton.nextFocusDownId = openVideoButton.id
         algorithmButton.nextFocusLeftId = originalButton.id
-        videoButton.nextFocusUpId = algorithmButton.id
+        openVideoButton.nextFocusUpId = algorithmButton.id
+        openVideoButton.nextFocusDownId = videoButton.id
+        videoButton.nextFocusUpId = openVideoButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
         sharpnessSlider.nextFocusUpId = videoButton.id
         panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
@@ -293,15 +337,18 @@ class MainActivity : Activity() {
                 prepared.setVolume(0f, 0f)
                 prepared.start()
                 videoButton.isEnabled = true
-                videoButton.text = "Pause test video"
-                videoSummary.text = "Playing ${source.label} through the GLES input path"
-                Log.i(TAG, "video=playing source=${source.assetPath} size=${source.size}")
+                videoButton.text = "Pause video"
+                videoSummary.text = "Playing ${inputLabel(source)} through the GLES input path"
+                Log.i(TAG, "video=playing source=${if (selectedLocalVideoUri != null) "local-video" else source.assetPath} size=${decodedVideoSize ?: source.size}")
             }.onFailure { failure ->
                 handleVideoPlaybackFailure(source, failure)
             }
         }
         player.setOnVideoSizeChangedListener { _, width, height ->
-            Log.i(TAG, "video=decoded-size ${width}x$height source=${source.assetPath}")
+            decodedVideoSize = PixelSize(width, height)
+            glView.queueEvent { renderer.updateDecodedVideoSize(width, height) }
+            Log.i(TAG, "video=decoded-size ${width}x$height input=${inputLabel(source)}")
+            videoSummary.text = "Playing ${inputLabel(source)} · decoded ${width}×$height into GLES"
         }
         player.setOnErrorListener { _, what, extra ->
             handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer error $what/$extra"))
@@ -309,13 +356,21 @@ class MainActivity : Activity() {
         }
 
         runCatching {
-            player.setDataSource(copyVideoAssetToCache(source).absolutePath)
+            val localUri = selectedLocalVideoUri
+            if (localUri != null) player.setDataSource(this, localUri)
+            else player.setDataSource(copyVideoAssetToCache(source).absolutePath)
             player.setSurface(surface)
             player.prepareAsync()
         }.onFailure { failure ->
             handleVideoPlaybackFailure(source, failure)
         }
     }
+
+    private fun inputLabel(source: VideoTestSource): String =
+        if (selectedLocalVideoUri != null) "local video" else source.label
+
+    private fun inputLabelForDiagnostics(source: String): String =
+        if (selectedLocalVideoUri != null) "local video" else source
 
     private fun copyVideoAssetToCache(source: VideoTestSource): File {
         val destination = File(cacheDir, source.assetPath.substringAfterLast('/'))
@@ -330,12 +385,12 @@ class MainActivity : Activity() {
         runCatching {
             if (player.isPlaying) {
                 player.pause()
-                videoButton.text = "Play test video"
+                videoButton.text = "Play video"
                 Log.i(TAG, "video=paused")
             } else {
                 player.start()
-                videoButton.text = "Pause test video"
-                Log.i(TAG, "video=playing source=${currentVideoSource?.assetPath}")
+                videoButton.text = "Pause video"
+                Log.i(TAG, "video=playing input=${selectedLocalVideoUri?.let { "local video" } ?: currentVideoSource?.label}")
             }
         }.onFailure { failure ->
             Log.e(TAG, "video=control-error", failure)
@@ -370,7 +425,8 @@ class MainActivity : Activity() {
         val displayMode = currentDisplayMode()
         val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
         val targetText = if (state.processedTarget.width > 0) "processed target ${state.processedTarget}" else "processed target pending"
-        val sourceText = if (state.source.width > 0) "source ${state.source}" else "source pending"
+        val actualSource = decodedVideoSize ?: state.source
+        val sourceText = if (actualSource.width > 0) "source $actualSource" else "source pending"
         resolutionSummary.text = "Display mode $displayMode  ·  $sourceText → $targetText  ·  $surfaceText"
 
         gpuSummary.text = if (state.glVersion.isNotBlank()) {
@@ -382,7 +438,10 @@ class MainActivity : Activity() {
         videoSummary.text = when {
             videoPlaybackError != null -> "Video input error: $videoPlaybackError"
             state.videoInputError != null -> "Video input error: ${state.videoInputError}. Generated chart is retained as fallback."
-            state.decodedVideoFrames > 0L -> "Decoded ${state.videoSource}  ·  uploaded frames ${state.decodedVideoFrames}"
+            state.decodedVideoFrames > 0L -> {
+                val dimensions = decodedVideoSize?.let { " · ${it.width}×${it.height}" } ?: ""
+                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · uploaded frames ${state.decodedVideoFrames}"
+            }
             else -> "Waiting for the first decoded frame from ${state.videoSource}"
         }
 

@@ -67,8 +67,8 @@ adb exec-out screencap -p > "$output_dir/video-motion-a.png"
 sleep 1
 adb exec-out screencap -p > "$output_dir/video-motion-b.png"
 
-# Initial focus is the algorithm control. DOWN opens the pause control, then
-# the same D-pad button resumes. Two post-resume captures prove frames advance again.
+# Initial focus is the algorithm control. DOWN reaches the file picker, second DOWN the pause control; two captures after resume prove playback advances again.
+adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_marker 'video=paused' 'remote pause control'
@@ -80,7 +80,8 @@ sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_occurrences 'video=paused' 2 'second pause after resume-motion check'
-# Return focus to the algorithm control before comparing filter modes.
+# Return focus from the pause control through the local-video picker to the algorithm control before comparing filter modes.
+adb shell input keyevent KEYCODE_DPAD_UP
 adb shell input keyevent KEYCODE_DPAD_UP
 sleep 1
 adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
@@ -108,6 +109,7 @@ adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_marker 'mode=easu_only' 'revisit EASU-only mode'
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_marker 'mode=fsr1' 'return to FSR1 for sharpness test'
+adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_RIGHT

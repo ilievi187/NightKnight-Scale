@@ -195,6 +195,11 @@ internal class FsrDemoRenderer(
         val source = VideoTestSource.forTarget(targetSize)
         sourceSize = source.size
         selectedVideoSource = source
+        targetSize = RenderPolicy.targetForSource(surfaceSize, sourceSize, minOf(maxTextureSize, 4096))
+        if (targetSize.width <= 0 || targetSize.height <= 0) {
+            error = "The decoded video size cannot be processed by the GLES renderer."
+            return
+        }
         runCatching { createOrReplaceTargets() }
             .onFailure { failure ->
                 error = "Could not create the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
@@ -208,6 +213,25 @@ internal class FsrDemoRenderer(
                 }
         }
         Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} video=${source.assetPath}")
+    }
+
+    /** Called only on the GL thread after the decoder reports its actual input dimensions. */
+    fun updateDecodedVideoSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0 || surfaceSize.width <= 0 || surfaceSize.height <= 0) return
+        val decodedSize = PixelSize(width, height)
+        if (decodedSize == sourceSize) return
+        sourceSize = decodedSize
+        targetSize = RenderPolicy.targetForSource(surfaceSize, sourceSize, minOf(maxTextureSize, 4096))
+        if (targetSize.width <= 0 || targetSize.height <= 0) {
+            error = "The decoded video size cannot be processed by the GLES renderer."
+            return
+        }
+        runCatching { createOrReplaceTargets() }
+            .onFailure { failure ->
+                error = "Could not resize the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
+                Log.e(TAG, error, failure)
+            }
+        Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize")
     }
 
     override fun onDrawFrame(unused: GL10?) {
