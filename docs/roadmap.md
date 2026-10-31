@@ -50,3 +50,22 @@ Completion requires the runtime checks above. The milestone is still in progress
 ## Future, explicitly not V1
 
 Temporal upscaling requires its needed motion/depth inputs. Frame generation is separate from spatial FSR and may not be claimed without a real implementation and validated pacing. Anime4K, video players, HDR, game-launcher integrations, streaming, and additional compositors remain future work.
+
+## M6 — Android TV shader demo (in progress)
+
+- [x] Add a TV-launchable Android module in the existing repository with Leanback metadata, touchscreen-optional manifest, and OpenGL ES 3 requirement.
+- [x] Implement a foreground, fullscreen GLES demo with generated chart fallback, an EASU pass, a separate RCAS pass, and original bilinear comparison.
+- [x] Add D-pad-focusable mode controls and a remote-adjustable RCAS sharpness slider.
+- [x] Report Android display mode, GL surface / processed dimensions, renderer capability, render-callback FPS, and a sparse synchronized completion sample with its scope labeled.
+- [x] Add pure policy tests for source/target sizing and RCAS strength mapping; compile all standalone GLSL ES shaders with `glslangValidator`.
+- [x] Add hosted Android Gradle/JVM CI with JDK 17, SDK Platform 36 and Build Tools 35+; first `testDebugUnitTest assembleDebug` run passed and produced a debug APK.
+- [x] Verify the CI APK SHA-256 and seven-day artifact upload. Run `40773983229` passed and the downloaded APK matched the logged digest and passed ZIP integrity.
+- [ ] Run a local Android Gradle build; the current host lacks Gradle, Android SDK and JDK 17.
+- [x] Run hosted API 36 Android TV 1080p emulator smoke using Google SwiftShader GLES 3.0: activity launch, shader readiness, 960×540→1920×1080 chart output, render FPS, D-pad Original/Enhanced switching, RCAS slider 8→9, and cropped A/B pixel difference all passed. This is emulator/software-renderer evidence only.
+- [x] Generate and package deterministic 30 fps H.264 test clips at 640×360, 960×540, 1280×720 and 1920×1080 with a non-overwriting generator. Each clip fully decoded locally with FFmpeg.
+- [x] Validate MediaPlayer → external OES SurfaceTexture → RGBA input → EASU/RCAS on hosted API 36 Android TV AVD. Runtime smoke saw decoded-frame upload/progression, remote pause/play, D-pad A/B, RCAS 8→9, and pixel differences between two moving frames plus enhanced/bilinear from the same paused frame. SwiftShader software GLES only.
+- [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
+- [ ] Add user-selectable/local video input and compare channel-like decoded content, bilinear, EASU, and EASU+RCAS against versioned reference captures.
+- [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
+
+This demo is not a system-wide enhancement layer. It does not capture or replace other applications, and it has no background service. The Android milestone is incomplete until build, remote-input, frame-output and target-device checks above are performed.

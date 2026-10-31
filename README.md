@@ -1,12 +1,23 @@
 # NightKnight Scale (NKScale)
 
-Linux-first GPU scaling control application. The first usable path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
+Open-source picture-scaling experiments, with Android TV now the priority and the existing Linux Gamescope prototype preserved as a separate supported path. The Linux path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
 
 ## Current state
 
-This is an early working prototype. The Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are implemented. The Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified. Native Vulkan processing and portal-authorized capture are later milestones.
+This is an early prototype. The Android TV GLES app in `android/` packages four deterministic H.264 clips. Android MediaPlayer decodes a target-matched clip to SurfaceTexture/OES and copies each frame into an RGBA texture. The TV remote can compare bilinear, EASU-only, FSR 1.0 EASU+RCAS, and experimental FSR+NR output. Hosted Android TV emulator CI verified playback, changing decoded frames, pause and resume, all four output modes, sharpness adjustment, and non-identical pixels between filter paths. Pixel differences establish that the modes produce different output, not that they improve perceptual quality. This is an in-app demo, not a system-wide enhancement layer. The emulator uses Google SwiftShader software rendering, so physical TV and target GPU behavior remain unverified. The existing Linux Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are preserved. The Linux Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the Linux validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified.
 
-Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). Do not interpret the aspirational roadmap as shipped functionality.
+Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). The [acceptance traceability matrix](docs/agent/luna-tv/acceptance-matrix.md) maps each prototype requirement to its concrete check or recorded gap. Do not interpret aspirational roadmap items as shipped functionality.
+
+## Android TV prototype
+
+The Android demo selects one of four 6-second H.264/YUV420p/30fps clips for an approximately 2×-per-axis upscale. MediaPlayer feeds a SurfaceTexture/OES input, which the GLES pipeline copies into an RGBA texture. D-pad controls compare **Original · Bilinear**, **EASU only**, **FSR 1.0** (EASU+RCAS), and **FSR + NR** (experimental mild spatial denoise before EASU), and adjust RCAS sharpness. The FSR1-derived shaders include AMD attribution and the MIT license. Diagnostics report display/source/target/surface dimensions, GL renderer/version, decoded frame count, render callback FPS, and a sparse CPU-submit-to-`glFinish` sample. This remains a foreground app demo, not a system-wide enhancement layer.
+
+```sh
+cd android
+gradle testDebugUnitTest assembleDebug
+```
+
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17, and compile SDK 36. GitHub Actions run `40834327084` passed Linux formatting/lint/tests, Android build/JVM tests, and Android TV emulator GLES/remote smoke. The API 36 Android TV 1080p AVD used Google SwiftShader GLES 3.0. The downloaded debug APK was identified as an Android package, passed ZIP integrity, and has SHA-256 `5bc1b77b5c41e90de9c7f4ac8d7fb295654e10936fb8b97a221a9936f661bf2c`. This is software-rendered emulator evidence, not physical-TV or target-GPU validation. See [`android/README.md`](android/README.md) and the [acceptance matrix](docs/agent/luna-tv/acceptance-matrix.md) for exact evidence and limits.
 
 ## Mode A: launch an app through Gamescope
 
