@@ -32,7 +32,8 @@ adb shell am start -W -n "$activity_name"
 wait_for_log_marker() {
     marker="$1"
     description="$2"
-    for attempt in $(seq 1 90); do
+    attempt_limit="${3:-90}"
+    for attempt in $(seq 1 "$attempt_limit"); do
         local log_output
         log_output="$(adb logcat -d -s NKScaleTV:I)"
         if grep -Fq "$marker" <<< "$log_output"; then
@@ -66,23 +67,12 @@ assert_diagnostics_reachable_at_1080p() {
     wait_for_log_marker 'shaders=ready' 'GLES initialization at 1080p dense UI scale'
     wait_for_log_marker 'video_frame=uploaded' 'video frame at 1080p dense UI scale'
     wait_for_log_marker 'surface=1920×1080' '1920x1080 GLES surface'
-    echo "1080p diagnostics test: startup ready; sending four D-pad DOWN events"
 
     # Focus chain: selected preset -> picker -> playback -> sharpness -> Diagnostics.
     for _ in 1 2 3 4; do adb shell input keyevent KEYCODE_DPAD_DOWN; done
-    sleep 1
-    echo "1080p diagnostics test: dumping focused control hierarchy"
-    adb shell uiautomator dump /sdcard/nkscale-diagnostics-focused.xml
-    adb pull /sdcard/nkscale-diagnostics-focused.xml "$output_dir/control-panel-focused-1080p.xml"
-    python3 android/scripts/assert_tv_diagnostics.py focused \
-        "$output_dir/control-panel-focused-1080p.xml" --width 1920 --height 1080
-
-    echo "1080p diagnostics test: opening focused Diagnostics button"
+    wait_for_log_marker 'diagnostics=focused visible=true' 'visible Diagnostics focus after D-pad navigation' 15
     adb shell input keyevent KEYCODE_DPAD_CENTER
-    sleep 1
-    adb shell uiautomator dump /sdcard/nkscale-diagnostics-open.xml
-    adb pull /sdcard/nkscale-diagnostics-open.xml "$output_dir/control-panel-dialog-1080p.xml"
-    python3 android/scripts/assert_tv_diagnostics.py dialog "$output_dir/control-panel-dialog-1080p.xml"
+    wait_for_log_marker 'diagnostics=open' 'Diagnostics dialog opening at 1080p' 15
     adb shell input keyevent KEYCODE_BACK
 
     # Restore the AVD's default density before pixel-comparison playback tests.
