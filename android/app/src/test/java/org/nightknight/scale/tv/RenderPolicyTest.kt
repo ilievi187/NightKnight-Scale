@@ -105,4 +105,55 @@ class RenderPolicyTest {
         assertEquals(1.0f, RenderPolicy.rcasScaleFor(-10), 0.0001f)
         assertEquals(0.03125f, RenderPolicy.rcasScaleFor(30), 0.0001f)
     }
+
+    @Test
+    fun multipassEasuUsesTheSmallestReusableBufferForEachPingPongSlot() {
+        assertEquals(
+            listOf(PixelSize(960, 540), PixelSize(1920, 1080)),
+            RenderPolicy.easuIntermediateSizes(PixelSize(480, 270), PixelSize(3840, 2160)),
+        )
+    }
+
+    @Test
+    fun rcasCanRenderDirectlyIntoAspectFitViewportUnlessTargetWasBudgetReduced() {
+        assertEquals(
+            false,
+            RenderPolicy.requiresRcasIntermediate(
+                target = PixelSize(1440, 1080),
+                surface = PixelSize(1920, 1080),
+                source = PixelSize(640, 480),
+            ),
+        )
+        assertEquals(
+            true,
+            RenderPolicy.requiresRcasIntermediate(
+                target = PixelSize(1280, 960),
+                surface = PixelSize(1920, 1080),
+                source = PixelSize(640, 480),
+            ),
+        )
+    }
+
+    @Test
+    fun gpuViewportUsesBottomLeftOriginAndKeepsTheLetterboxedImageCentered() {
+        assertEquals(
+            GlViewport(x = 0, y = 1, width = 1280, height = 720),
+            RenderPolicy.glViewportForContent(PixelSize(1280, 721), PixelSize(1920, 1080)),
+        )
+    }
+
+    @Test
+    fun memoryEstimateCountsExactPingPongSizesAndOnlyRequestedNoiseReduction() {
+        val source = PixelSize(480, 270)
+        val target = PixelSize(3840, 2160)
+        val surface = PixelSize(3840, 2160)
+        assertEquals(
+            44_582_400L,
+            RenderPolicy.estimatedRgbaTextureBytes(source, target, surface, includeNoiseReduction = true),
+        )
+        assertEquals(
+            44_064_000L,
+            RenderPolicy.estimatedRgbaTextureBytes(source, target, surface, includeNoiseReduction = false),
+        )
+    }
 }

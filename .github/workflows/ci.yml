@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/android-tv-fsr-prototype, feature/luna-gpu-engine]
   pull_request:
-    branches: [main]
+    branches: [main, feature/android-tv-fsr-prototype]
 
 permissions:
   contents: read
@@ -54,7 +54,7 @@ jobs:
           gradle-version: '8.13'
           cache-provider: basic
       - name: Run Android unit tests and assemble debug APK
-        run: gradle -p android --no-daemon testDebugUnitTest assembleDebug
+        run: gradle -p android --no-daemon --max-workers=2 testDebugUnitTest assembleDebug
       - name: Print debug APK SHA-256
         run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk
       - name: Upload debug APK for manual TV testing
