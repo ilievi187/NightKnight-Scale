@@ -4,9 +4,10 @@ package org.nightknight.scale.tv
 internal data class VideoTestSource(
     val assetPath: String,
     val size: PixelSize,
+    val frameRate: Float = 30.0f,
 ) {
     val label: String
-        get() = "${size.width}×${size.height} H.264 / 30 fps"
+        get() = "${size.width}×${size.height} H.264 / ${frameRate.toInt()} fps"
 
     companion object {
         fun forTarget(target: PixelSize): VideoTestSource = when {

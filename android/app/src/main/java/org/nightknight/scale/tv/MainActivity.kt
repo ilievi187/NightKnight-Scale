@@ -145,6 +145,7 @@ class MainActivity : Activity() {
         }.getOrDefault(false)
         stopVideoPlayback()
         selectedLocalVideoUri = uri
+        renderer.sourceVideoFps = null
         decodedVideoSize = null
         preferences.edit().apply {
             if (grantPersists) putString("local_video_uri", uri.toString()) else remove("local_video_uri")
@@ -353,6 +354,7 @@ class MainActivity : Activity() {
             currentVideoSurfaceTexture = surfaceTexture
         }
         currentVideoSource = source
+        renderer.sourceVideoFps = if (selectedLocalVideoUri == null) source.frameRate else null
         videoPlaybackError = null
         videoSummary.text = "Preparing ${source.label} test clip…"
         if (activityResumed) startVideoPlaybackIfReady()
@@ -473,7 +475,14 @@ class MainActivity : Activity() {
     private fun updateDiagnostics() {
         if (!::renderer.isInitialized) return
         val state = renderer.snapshot()
-        modeSummary.text = state.error ?: "${selectedPreset.label} · ${state.mode.summary}"
+        modeSummary.text = when {
+            state.error != null -> state.error
+            state.allocationFallbackReason != null -> "${selectedPreset.label} · ${state.allocationFallbackReason}"
+            state.qualityFallbackReason != null -> "${selectedPreset.label} · ${state.qualityFallbackReason}"
+            state.shaderFallbackReason != null -> "${selectedPreset.label} · ${state.shaderFallbackReason}"
+            state.effectiveMode != state.mode -> "${selectedPreset.label} requested · using ${state.effectiveMode.label}"
+            else -> "${selectedPreset.label} · ${state.mode.summary}"
+        }
 
         val displayMode = currentDisplayMode()
         val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
@@ -493,16 +502,18 @@ class MainActivity : Activity() {
             state.videoInputError != null -> "Video input error: ${state.videoInputError}. Generated chart is retained as fallback."
             state.decodedVideoFrames > 0L -> {
                 val dimensions = decodedVideoSize?.let { " · ${it.width}×${it.height}" } ?: ""
-                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · uploads ${state.decodedVideoFrames}/${state.videoFrameCallbacks} callbacks · skipped≈${state.estimatedSkippedFrames}"
+                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · consumed ${state.decodedVideoFrames}/${state.videoFrameCallbacks} SurfaceTexture callbacks · skipped≈${state.estimatedSkippedFrames}"
             }
             else -> "Waiting for the first decoded frame from ${state.videoSource}"
         }
 
-        val renderFps = if (state.fps > 0f) "%.1f".format(state.fps) else "—"
-        val inputFps = if (state.inputFps > 0f) "%.1f".format(state.inputFps) else "—"
+        val sourceFps = state.sourceVideoFps?.let { "%.1f".format(it) } ?: "N/A"
+        val surfaceCallbackFps = state.surfaceTextureCallbackFps?.let { "%.1f".format(it) } ?: "—"
+        val renderFps = if (state.rendererCallbackFps > 0f) "%.1f".format(state.rendererCallbackFps) else "—"
         val frameMs = state.averageFrameIntervalMs?.let { "%.1f".format(it) } ?: "—"
-        val submitMs = state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"
-        metricsSummary.text = "Render $renderFps fps · OES upload $inputFps fps · frame avg $frameMs ms · submit $submitMs ms"
+        val submitMs = state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"
+        val gpuMs = state.gpuExecutionMs?.let { "%.2f".format(it) } ?: "—"
+        metricsSummary.text = "Source $sourceFps fps · SurfaceTexture $surfaceCallbackFps · renderer $renderFps · CPU $submitMs ms · GPU $gpuMs ms · frame avg $frameMs ms"
         updatePresetButtons()
     }
 
@@ -512,23 +523,41 @@ class MainActivity : Activity() {
         val viewport = RenderPolicy.contentViewport(state.surface, actualSource)
         val message = buildString {
             appendLine("Preset: ${selectedPreset.label} (${state.mode.id})")
+            appendLine("Effective processing: ${state.effectiveMode.id}")
+            state.allocationFallbackReason?.let { appendLine("GPU fallback: $it") }
+            state.qualityFallbackReason?.let { appendLine("Quality fallback: $it") }
+            state.shaderFallbackReason?.let { appendLine("Shader fallback: $it") }
+            val rcasPath = when {
+                !state.effectiveMode.usesRcas -> "disabled"
+                RenderPolicy.requiresRcasIntermediate(state.processedTarget, state.surface, actualSource) -> "separate RGBA scratch target"
+                else -> "direct into aspect-fit display viewport"
+            }
+            appendLine("RCAS destination: $rcasPath")
             appendLine("Input: $actualSource · output: ${state.processedTarget} · surface: ${state.surface}")
             appendLine("EASU pass count: ${state.easuStageCount} · aspect-fit viewport: ${viewport.width}×${viewport.height} at ${viewport.left},${viewport.top}")
             val textureMiB = state.estimatedRgbaTextureBytes / (1024f * 1024f)
             val memoryWarning = if (state.estimatedRgbaTextureBytes > RenderPolicy.MAX_RGBA_TEXTURE_BYTES) " · OVER budget (source memory irreducible)" else ""
             appendLine("RGBA render-target estimate: ${"%.1f".format(textureMiB)} MiB / 128 MiB budget$memoryWarning · excludes decoder/driver memory")
             appendLine("Decoder path: $decoderDescription")
-            appendLine("Input frame callbacks: ${state.videoFrameCallbacks} · uploaded: ${state.decodedVideoFrames}")
+            appendLine("SurfaceTexture callbacks: ${state.videoFrameCallbacks} · frames consumed: ${state.decodedVideoFrames}")
             appendLine("Coalesced callbacks (estimated skipped): ${state.estimatedSkippedFrames}")
             appendLine("Decoder-reported lag events: ${state.decoderLagEvents}")
-            appendLine("Input callback cadence: ${"%.2f".format(state.inputFps)} fps")
-            appendLine("Render callback cadence: ${"%.2f".format(state.fps)} fps")
+            appendLine("Nominal source video FPS: ${state.sourceVideoFps?.let { "%.2f".format(it) + " fps" } ?: "N/A (unknown for this local track)"}")
+            appendLine("SurfaceTexture callback cadence: ${state.surfaceTextureCallbackFps?.let { "%.2f".format(it) } ?: "—"} fps")
+            appendLine("Consumed SurfaceTexture timestamp cadence: ${state.consumedMediaTimestampFps?.let { "%.2f".format(it) } ?: "—"} fps")
+            appendLine("Renderer callback cadence: ${"%.2f".format(state.rendererCallbackFps)} fps (not display FPS)")
             appendLine("Frame interval ms: last=${state.lastFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, avg=${state.averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, max=${state.maximumFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}")
-            appendLine("CPU GL-submit time: ${state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms")
-            appendLine("Sparse submit-to-glFinish sample: ${state.synchronizedFrameMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            appendLine("CPU GL-submit time: ${state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            val gpuText = when {
+                !state.gpuTimerQueryAvailable -> "N/A (GL_EXT_disjoint_timer_query unsupported)"
+                state.gpuExecutionMs == null -> "waiting for asynchronous timer sample"
+                else -> "${"%.3f".format(state.gpuExecutionMs)} ms"
+            }
+            appendLine("GPU execution time: $gpuText")
+            appendLine("Display presentation timing: ${if (state.displayPresentationTimingAvailable) "available" else "N/A (no presentation timestamp source)"}")
             appendLine("Renderer: ${state.gpuRenderer}")
             appendLine("GLES: ${state.glVersion} · max texture ${state.maxTextureSize}")
-            append("Skipped-frame and FPS values are renderer callback estimates, not hardware decoder counters or display-present timing.")
+            append("Coalesced callback counts and renderer cadence are estimates, not decoder drop counters or physical-display presentation measurements.")
         }
         android.app.AlertDialog.Builder(this)
             .setTitle("NightKnight · Diagnostics")

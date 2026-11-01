@@ -5,6 +5,7 @@ precision highp int;
 // GLES 3.0 port of AMD FidelityFX FSR 1.0 RCAS, 32-bit path.
 uniform sampler2D uInput;
 uniform float uSharpnessScale;
+uniform vec2 uViewportOrigin;
 out vec4 fragColor;
 
 vec3 loadPixel(ivec2 p, ivec2 size) {
@@ -18,7 +19,7 @@ float safeReciprocal(float value) {
 
 void main() {
     ivec2 size = textureSize(uInput, 0);
-    ivec2 p = ivec2(gl_FragCoord.xy);
+    ivec2 p = ivec2(gl_FragCoord.xy - uViewportOrigin);
     vec3 b = loadPixel(p + ivec2( 0, -1), size);
     vec3 d = loadPixel(p + ivec2(-1,  0), size);
     vec3 e = loadPixel(p, size);
