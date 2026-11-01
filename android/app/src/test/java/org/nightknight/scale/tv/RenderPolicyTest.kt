@@ -158,6 +158,47 @@ class RenderPolicyTest {
     }
 
     @Test
+    fun geometryAwareRcasRoutingUsesDisplayAspectAndActualCodedTextureStages() {
+        val geometry = VideoGeometry.pal16x9(720, 576)
+        val source = geometry.orientedSize
+        val surface = PixelSize(1920, 1080)
+        val target = RenderPolicy.targetForGeometry(
+            surface = surface,
+            geometry = geometry,
+            maxTextureSize = 4096,
+            sourceTextureSize = source,
+            includeNoiseReduction = false,
+            includeEasu = true,
+            includeRcas = true,
+        )
+
+        assertEquals(PixelSize(1920, 1080), target)
+        assertFalse(RenderPolicy.requiresRcasIntermediate(target, surface, geometry))
+        assertTrue(RenderPolicy.requiresRcasIntermediate(target, surface, source))
+        assertEquals(
+            16_174_080L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source = source,
+                target = target,
+                surface = surface,
+                includeNoiseReduction = false,
+                includeEasu = true,
+                includeRcas = true,
+                rcasIntermediateRequired = false,
+            ),
+        )
+    }
+
+    @Test
+    fun geometryAwareGlViewportUsesDisplayAspectAndBottomLeftOrigin() {
+        val viewport = RenderPolicy.glViewportForContent(
+            PixelSize(1920, 1080),
+            VideoGeometry.pal4x3(720, 576),
+        )
+        assertEquals(GlViewport(x = 240, y = 0, width = 1440, height = 1080), viewport)
+    }
+
+    @Test
     fun memoryEstimateIncludesOnlyResourcesRequiredByEachPreset() {
         val source = PixelSize(640, 480)
         val target = PixelSize(1280, 960)

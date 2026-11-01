@@ -51,6 +51,8 @@ internal data class RendererSnapshot(
     val videoSource: String,
     val decodedVideoFrames: Long,
     val videoInputError: String?,
+    val geometry: VideoGeometry = VideoGeometry(0, 0),
+    val aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
 )
 
 internal class FsrDemoRenderer(
@@ -68,6 +70,12 @@ internal class FsrDemoRenderer(
 
     @Volatile
     var sharpnessProgress = 8
+
+    @Volatile
+    var aspectMode = AspectRatioMode.AUTO
+
+    @Volatile
+    private var videoGeometry = VideoGeometry(0, 0)
 
     @Volatile
     private var sourceSize = PixelSize(0, 0)
@@ -222,6 +230,11 @@ internal class FsrDemoRenderer(
             includeEasu = outputTexture != 0,
             includeRcas = effectiveMode.usesRcas,
             includeSourceTexture = inputTexture != 0,
+            rcasIntermediateRequired = if (videoGeometry.codedWidth > 0) {
+                RenderPolicy.requiresRcasIntermediate(targetSize, surfaceSize, videoGeometry, aspectMode)
+            } else {
+                null
+            },
         ),
         videoFrameCallbacks = totalVideoFrameCallbacks.get(),
         estimatedSkippedFrames = estimatedSkippedFrames,
@@ -238,6 +251,8 @@ internal class FsrDemoRenderer(
         videoSource = selectedVideoSource?.label ?: "Waiting for output size",
         decodedVideoFrames = decodedVideoFrames,
         videoInputError = videoInputError,
+        geometry = videoGeometry,
+        aspectMode = aspectMode,
     )
 
     fun recordDecoderLag() {
@@ -373,12 +388,15 @@ internal class FsrDemoRenderer(
         }
         val source = VideoTestSource.forTarget(targetSize)
         sourceSize = source.size
+        videoGeometry = VideoGeometry.fromSize(sourceSize)
         selectedVideoSource = source
         val renderMode = availableModeFor(mode)
-        targetSize = RenderPolicy.targetForSource(
-            surfaceSize,
-            sourceSize,
-            minOf(maxTextureSize, 4096),
+        targetSize = RenderPolicy.targetForGeometry(
+            surface = surfaceSize,
+            geometry = videoGeometry,
+            maxTextureSize = minOf(maxTextureSize, 4096),
+            aspectMode = aspectMode,
+            sourceTextureSize = sourceSize,
             includeNoiseReduction = renderMode.usesNoiseReduction,
             includeEasu = renderMode.usesEasu,
             includeRcas = renderMode.usesRcas,
@@ -407,25 +425,46 @@ internal class FsrDemoRenderer(
         Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} easu_stages=$easuStageCount rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()} video=${source.assetPath}")
     }
 
+    /** Update aspect ratio override (AUTO, 16:9, 4:3, SQUARE_PIXELS). */
+    fun setAspectRatioMode(mode: AspectRatioMode) {
+        aspectMode = mode
+        if (videoGeometry.codedWidth > 0 && surfaceSize.width > 0) {
+            updateDecodedVideoGeometry(videoGeometry)
+        }
+    }
+
     /** Called only on the GL thread after the decoder reports its actual input dimensions. */
     fun updateDecodedVideoSize(width: Int, height: Int) {
         if (width <= 0 || height <= 0 || surfaceSize.width <= 0 || surfaceSize.height <= 0) return
-        val decodedSize = PixelSize(width, height)
-        if (decodedSize == sourceSize) return
-        sourceSize = decodedSize
+        val currentGeometry = if (videoGeometry.codedWidth > 0) videoGeometry else VideoGeometry(width, height)
+        updateDecodedVideoGeometry(currentGeometry.copy(codedWidth = width, codedHeight = height))
+    }
+
+    /** Called on the GL thread when video geometry (SAR, rotation, dimensions) is updated. */
+    fun updateDecodedVideoGeometry(geometry: VideoGeometry) {
+        if (geometry.codedWidth <= 0 || geometry.codedHeight <= 0 || surfaceSize.width <= 0 || surfaceSize.height <= 0) return
+        val newSourceSize = geometry.orientedSize
         val renderMode = availableModeFor(mode)
-        targetSize = RenderPolicy.targetForSource(
-            surfaceSize,
-            sourceSize,
-            minOf(maxTextureSize, 4096),
+        val newTargetSize = RenderPolicy.targetForGeometry(
+            surface = surfaceSize,
+            geometry = geometry,
+            maxTextureSize = minOf(maxTextureSize, 4096),
+            aspectMode = aspectMode,
+            sourceTextureSize = newSourceSize,
             includeNoiseReduction = renderMode.usesNoiseReduction,
             includeEasu = renderMode.usesEasu,
             includeRcas = renderMode.usesRcas,
         )
-        if (targetSize.width <= 0 || targetSize.height <= 0) {
+        if (newTargetSize.width <= 0 || newTargetSize.height <= 0) {
             error = "The decoded video size cannot be processed by the GLES renderer."
             return
         }
+        if (geometry == videoGeometry && newSourceSize == sourceSize && newTargetSize == targetSize) return
+
+        videoGeometry = geometry
+        sourceSize = newSourceSize
+        targetSize = newTargetSize
+        error = null
         runCatching { createOrReplaceTargets() }
             .onFailure { failure ->
                 error = "Could not resize the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
@@ -464,10 +503,12 @@ internal class FsrDemoRenderer(
         if (requested == lastModeOnGlThread) return
         val resourceMode = availableModeFor(requested)
         if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
-            val nextTarget = RenderPolicy.targetForSource(
-                surfaceSize,
-                sourceSize,
-                minOf(maxTextureSize, 4096),
+            val nextTarget = RenderPolicy.targetForGeometry(
+                surface = surfaceSize,
+                geometry = videoGeometry,
+                maxTextureSize = minOf(maxTextureSize, 4096),
+                aspectMode = aspectMode,
+                sourceTextureSize = sourceSize,
                 includeNoiseReduction = resourceMode.usesNoiseReduction,
                 includeEasu = resourceMode.usesEasu,
                 includeRcas = resourceMode.usesRcas,
@@ -627,7 +668,7 @@ internal class FsrDemoRenderer(
         GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val viewport = RenderPolicy.glViewportForContent(surfaceSize, sourceSize)
+        val viewport = RenderPolicy.glViewportForContent(surfaceSize, videoGeometry, aspectMode)
         if (externalInputTexture == 0 || viewport.width <= 0 || viewport.height <= 0 || decodedVideoFrames == 0L) return
         GLES30.glViewport(viewport.x, viewport.y, viewport.width, viewport.height)
         drawExternalTexture()
@@ -670,7 +711,7 @@ internal class FsrDemoRenderer(
         GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val viewport = RenderPolicy.glViewportForContent(surfaceSize, sourceSize)
+        val viewport = RenderPolicy.glViewportForContent(surfaceSize, videoGeometry, aspectMode)
         if (viewport.width <= 0 || viewport.height <= 0) return
         GLES30.glViewport(viewport.x, viewport.y, viewport.width, viewport.height)
         drawRcas(viewportOriginX = viewport.x, viewportOriginY = viewport.y)
@@ -681,7 +722,11 @@ internal class FsrDemoRenderer(
         GLES30.glViewport(0, 0, surfaceSize.width, surfaceSize.height)
         GLES30.glClearColor(0f, 0f, 0f, 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val viewport = RenderPolicy.contentViewport(surfaceSize, sourceSize)
+        val viewport = if (videoGeometry.codedWidth > 0 && videoGeometry.codedHeight > 0) {
+            RenderPolicy.contentViewport(surfaceSize, videoGeometry, aspectMode)
+        } else {
+            RenderPolicy.contentViewport(surfaceSize, sourceSize)
+        }
         if (viewport.width <= 0 || viewport.height <= 0) return
         GLES30.glViewport(
             viewport.left,
@@ -799,7 +844,9 @@ internal class FsrDemoRenderer(
                 outputTexture = createEmptyTexture(targetSize, GLES30.GL_LINEAR)
                 framebuffer = createFramebuffer(outputTexture)
 
-                if (renderMode.usesRcas && RenderPolicy.requiresRcasIntermediate(targetSize, surfaceSize, sourceSize)) {
+                if (renderMode.usesRcas &&
+                    RenderPolicy.requiresRcasIntermediate(targetSize, surfaceSize, videoGeometry, aspectMode)
+                ) {
                     rcasTexture = createEmptyTexture(targetSize, GLES30.GL_LINEAR)
                     rcasFramebuffer = createFramebuffer(rcasTexture)
                 }
@@ -988,6 +1035,23 @@ internal class FsrDemoRenderer(
         try {
             surfaceTexture.updateTexImage()
             surfaceTexture.getTransformMatrix(textureTransform)
+            if (videoGeometry.normalizedRotation != 0) {
+                val matrixHasRotation = when (videoGeometry.normalizedRotation) {
+                    90, 270 -> abs(textureTransform[1]) > 0.5f || abs(textureTransform[4]) > 0.5f
+                    180 -> textureTransform[0] < -0.5f
+                    else -> false
+                }
+                if (!matrixHasRotation) {
+                    val rotMatrix = FloatArray(16)
+                    android.opengl.Matrix.setIdentityM(rotMatrix, 0)
+                    android.opengl.Matrix.translateM(rotMatrix, 0, 0.5f, 0.5f, 0f)
+                    android.opengl.Matrix.rotateM(rotMatrix, 0, videoGeometry.normalizedRotation.toFloat(), 0f, 0f, 1f)
+                    android.opengl.Matrix.translateM(rotMatrix, 0, -0.5f, -0.5f, 0f)
+                    val combined = FloatArray(16)
+                    android.opengl.Matrix.multiplyMM(combined, 0, textureTransform, 0, rotMatrix, 0)
+                    System.arraycopy(combined, 0, textureTransform, 0, 16)
+                }
+            }
             val timestampNs = surfaceTexture.timestamp
             if (timestampNs > 0L) {
                 mediaTimestampCadence.record(timestampNs)?.let { consumedMediaTimestampFps = it }

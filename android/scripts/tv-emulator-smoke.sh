@@ -82,6 +82,17 @@ sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_occurrences 'video=paused' 2 'second pause after resume-motion check'
+# Cycle every explicit aspect override from the focused Play/Pause row, then return to the preset row.
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'aspect_mode=16_9' 'Force 16:9 aspect override'
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'aspect_mode=4_3' 'Force 4:3 aspect override'
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'aspect_mode=1_1' 'square-pixel aspect override'
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'aspect_mode=auto' 'restore automatic aspect mode'
+adb shell input keyevent KEYCODE_DPAD_LEFT
 # Return focus from the pause control through the local-video button to the selected preset before comparing filter modes.
 adb shell input keyevent KEYCODE_DPAD_UP
 adb shell input keyevent KEYCODE_DPAD_UP
@@ -156,7 +167,7 @@ adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/preset-and-settings
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
-for marker in 'shaders=ready' 'gpu_timer_query=' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9'; do
+for marker in 'shaders=ready' 'gpu_timer_query=' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
     if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
         echo "Expected preset/settings emulator marker was not observed: $marker" >&2
         cat "$output_dir/preset-and-settings-logcat.txt" >&2

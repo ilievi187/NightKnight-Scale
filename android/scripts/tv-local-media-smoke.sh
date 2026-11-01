@@ -170,4 +170,13 @@ select_and_verify nk-local-50-576p.mp4 'duration 00:06' '768x576' 50 1 no
 select_and_verify nk-local-60-480p.mp4 'duration 00:07' '640x360' 60 2 no
 select_and_verify nk-local-portrait.mp4 'duration 00:08' '360x640' 30 1 no
 
-echo "SAF/Photo Picker local-file playback smoke passed: 25/30/50/60 fps SDR clips, 4:3/16:9/portrait aspect ratios and 576p. Emulator-only; not a physical TV test."
+# Reset from the adjacent D-pad control and verify packaged playback replaces the local source.
+adb logcat -c
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_app_log 'video=reset-to-demo'
+wait_for_app_log 'video=playing source=test-videos/scale-test-'
+wait_for_app_log 'video_frame=uploaded'
+adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/demo-reset-logcat.txt"
+
+echo "SAF/Photo Picker local-file playback smoke passed: 25/30/50/60 fps SDR clips, 4:3/16:9/portrait aspect ratios and 576p. D-pad reset returned to packaged playback. Emulator-only; not a physical TV test."
