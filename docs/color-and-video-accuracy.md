@@ -15,7 +15,7 @@ This document records the geometry policy, metadata fields the Android media API
 
 Video geometry, Display Aspect Ratio (DAR) calculation, viewport fitting, and remote override controls are implemented in `VideoGeometry`, `RenderPolicy`, and `MainActivity`. Metadata availability is provider/device-dependent; when SAR/DAR is missing, the current policy uses a 4:3 heuristic for recognized 720×576 and 720×480 dimensions, so anamorphic 16:9 material without metadata requires an explicit user override.
 
-The FSR EASU/RCAS filter equations were not changed in this GPU pass. RCAS received only a viewport-origin coordinate offset so it can write directly into an aspect-fit display viewport. Standalone GLSL syntax validation and emulator CI do not independently establish equivalence to AMD's reference corpus or perceptual image quality.
+The EASU/RCAS filter equations were not changed in this GPU pass; RCAS gained only a viewport-origin offset for direct aspect-fit output. The GLES port retains EASU's 12-tap adaptive kernel/anti-ringing clamp and RCAS's five-sample cross/lobe limit, but uses GLES texture fetches, finite-value guards, and GLSL division instead of AMD's platform-specific reciprocal approximations. Treat it as algorithmically aligned, not bit-exact or perceptually certified; CI shader compilation does not prove image-quality equivalence.[1]
 
 ---
 
@@ -49,6 +49,14 @@ Prior to Mission 9, the player used raw `codedWidth` $\times$ `codedHeight` dire
    - On a 1080p panel: PAL 16:9 $\to$ `PixelRect(0, 0, 1920, 1080)` (full screen 16:9).
    - On a 4K panel (3840 $\times$ 2160): PAL 4:3 $\to$ `PixelRect(480, 0, 2880, 2160)`.
    - On a 4K panel: PAL 16:9 $\to$ `PixelRect(0, 0, 3840, 2160)`.
+
+### 2.3 Primary-source verification (November 1, 2026)
+
+AMD's reference source confirms EASU's edge-direction/adaptive 12-tap resolve and anti-ringing clamp, and RCAS's center-plus-cross resolve with a bounded negative lobe. The local GLES port preserves those filter structures; it intentionally does not include AMD's optional RCAS denoise permutation, and its guards/reciprocal operations are not a bit-for-bit port.[1][2]
+
+Android documents track SAR fields and gives display aspect as the visible crop ratio multiplied by SAR; MediaCodec crop right/bottom coordinates are inclusive. The metadata reader now derives DAR from inclusive crop bounds and SAR when crop metadata is present, while keeping the coded dimensions for texture allocation. If a provider omits crop and SAR, the existing PAL/NTSC heuristic or square-pixel fallback remains in effect.[3][4][5]
+
+The tests cover synthetic crop/SAR arithmetic and the emulator confirms GLES shader compilation. They do not establish that every Android provider exposes these fields, that a physical decoder applies crop transforms identically, or that output matches AMD's reference images; those remain device/reference-image validation items.
 
 ---
 
@@ -126,3 +134,11 @@ The following rectangles are deterministic `VideoGeometry`/`RenderPolicy` fixtur
 | **Portrait 90°** | 1920 $\times$ 1080 [90°], SAR 1:1 | 1920 $\times$ 1080 | `PixelRect(656, 0, 608, 1080)` (upright pillarbox) |
 | **Inverted 180°** | 1920 $\times$ 1080 [180°], SAR 1:1 | 1920 $\times$ 1080 | `PixelRect(0, 0, 1920, 1080)` (landscape) |
 | **Letterboxed** | 1920 $\times$ 1080 16:9 | 1440 $\times$ 1080 (4:3) | `PixelRect(0, 135, 1440, 810)` (top/bottom bars) |
+
+## Sources
+
+[1] https://github.com/GPUOpen-Effects/FidelityFX-FSR/blob/master/ffx-fsr/ffx_fsr1.h — AMD GPUOpen FSR 1.0 reference source (ffx_fsr1.h)
+[2] https://gpuopen.com/fidelityfx-superresolution — AMD GPUOpen FidelityFX Super Resolution 1
+[3] https://developer.android.com/reference/android/media/MediaExtractor — Android MediaExtractor API reference
+[4] https://developer.android.com/reference/android/media/MediaFormat — Android MediaFormat API reference
+[5] https://developer.android.com/reference/android/media/MediaCodec — Android MediaCodec crop and output-format reference

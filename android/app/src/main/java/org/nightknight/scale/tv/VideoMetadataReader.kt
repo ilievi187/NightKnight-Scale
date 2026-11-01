@@ -12,7 +12,7 @@ import java.io.File
 
 /**
  * Deterministic metadata extraction from video assets, local files, and content URIs.
- * Probes container and bitstream metadata (dimensions, rotation, SAR, and colorimetry).
+ * Reads metadata exposed by MediaMetadataRetriever/MediaExtractor; it does not parse bitstreams itself.
  */
 internal object VideoMetadataReader {
     private const val TAG = "NKScaleTV"
@@ -163,8 +163,44 @@ internal object VideoMetadataReader {
         }
     }
 
-    private fun intOrDefault(format: MediaFormat, key: String): Int =
-        if (format.containsKey(key)) runCatching { format.getInteger(key) }.getOrDefault(0) else 0
+    private fun intOrNull(format: MediaFormat, key: String): Int? =
+        if (format.containsKey(key)) runCatching { format.getInteger(key) }.getOrNull() else null
+
+    private fun intOrDefault(format: MediaFormat, key: String): Int = intOrNull(format, key) ?: 0
+
+    /** Derive visible DAR from Android's inclusive crop rectangle and SAR when available. */
+    internal fun deriveDisplayAspectRatio(
+        width: Int,
+        height: Int,
+        sarWidth: Int = 1,
+        sarHeight: Int = 1,
+        cropLeft: Int? = null,
+        cropTop: Int? = null,
+        cropRight: Int? = null,
+        cropBottom: Int? = null,
+        displayWidth: Int = 0,
+        displayHeight: Int = 0,
+    ): Double? {
+        if (displayWidth > 0 && displayHeight > 0) {
+            return (displayWidth.toDouble() / displayHeight).takeIf { it.isFinite() && it > 0.0 }
+        }
+        if (width <= 0 || height <= 0) return null
+        val hasCropMetadata = cropLeft != null || cropTop != null || cropRight != null || cropBottom != null
+        if (!hasCropMetadata) return null
+
+        val left = (cropLeft ?: 0).coerceIn(0, width - 1)
+        val top = (cropTop ?: 0).coerceIn(0, height - 1)
+        val right = (cropRight ?: (width - 1)).coerceIn(0, width - 1)
+        val bottom = (cropBottom ?: (height - 1)).coerceIn(0, height - 1)
+        if (right < left || bottom < top) return null
+
+        val visibleWidth = right - left + 1
+        val visibleHeight = bottom - top + 1
+        val safeSarWidth = sarWidth.takeIf { it > 0 } ?: 1
+        val safeSarHeight = sarHeight.takeIf { it > 0 } ?: 1
+        return (visibleWidth.toDouble() * safeSarWidth / (visibleHeight.toDouble() * safeSarHeight))
+            .takeIf { it.isFinite() && it > 0.0 }
+    }
 
     private fun extractFromExtractor(extractor: MediaExtractor): VideoInfo? {
         for (i in 0 until extractor.trackCount) {
@@ -174,18 +210,25 @@ internal object VideoMetadataReader {
                 val width = intOrDefault(format, MediaFormat.KEY_WIDTH)
                 val height = intOrDefault(format, MediaFormat.KEY_HEIGHT)
                 val rotation = intOrDefault(format, "rotation-degrees")
-                val sarWidthProvided = format.containsKey("sar-width")
-                val sarHeightProvided = format.containsKey("sar-height")
-                val sarW = if (sarWidthProvided) intOrDefault(format, "sar-width") else 1
-                val sarH = if (sarHeightProvided) intOrDefault(format, "sar-height") else 1
-                val hasSarMetadata = sarWidthProvided && sarHeightProvided && sarW > 0 && sarH > 0
+                val sarWidthValue = intOrNull(format, "sar-width")
+                val sarHeightValue = intOrNull(format, "sar-height")
+                val hasSarMetadata = sarWidthValue != null && sarHeightValue != null && sarWidthValue > 0 && sarHeightValue > 0
+                val sarW = if (hasSarMetadata) sarWidthValue!! else 1
+                val sarH = if (hasSarMetadata) sarHeightValue!! else 1
                 val displayWidth = intOrDefault(format, "display-width")
                 val displayHeight = intOrDefault(format, "display-height")
-                val darRatio = if (displayWidth > 0 && displayHeight > 0) {
-                    displayWidth.toDouble() / displayHeight.toDouble()
-                } else {
-                    null
-                }
+                val darRatio = deriveDisplayAspectRatio(
+                    width = width,
+                    height = height,
+                    sarWidth = sarW,
+                    sarHeight = sarH,
+                    cropLeft = intOrNull(format, "crop-left"),
+                    cropTop = intOrNull(format, "crop-top"),
+                    cropRight = intOrNull(format, "crop-right"),
+                    cropBottom = intOrNull(format, "crop-bottom"),
+                    displayWidth = displayWidth,
+                    displayHeight = displayHeight,
+                )
                 val frameRate = if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
                     runCatching { format.getFloat(MediaFormat.KEY_FRAME_RATE) }
                         .getOrElse { runCatching { format.getInteger(MediaFormat.KEY_FRAME_RATE).toFloat() }.getOrDefault(0f) }

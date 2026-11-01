@@ -33,6 +33,7 @@ Mission 5 Actions run `41237543233` and the local API 36 AVD exercised the app u
 1. **Deterministic Video Geometry & Non-Square Pixel Engine:**
    - Implemented `VideoGeometry` modeling coded dimensions, Sample Aspect Ratio (SAR / PAR), container Display Aspect Ratio (DAR), and rotation metadata (0°, 90°, 180°, 270°).
    - Implements non-square PAL/NTSC SAR/DAR fixtures and exact aspect-fit viewport math. When media metadata omits SAR/DAR, recognized 720×576 and 720×480 dimensions use a 4:3 heuristic; anamorphic 16:9 without metadata requires the user override and remains a physical-file validation item.
+   - Uses optional track crop bounds plus SAR to derive visible DAR when the provider exposes those fields; absent crop/SAR still follows the documented fallback. The synthetic crop test does not prove provider-specific decoder crop behavior on TCL hardware.
    - Automatically handles portrait video and 90°/270° rotation metadata via oriented buffer dimensions and texture transform validation.
    - Added D-pad controllable Aspect Ratio mode override: **Auto (SAR/DAR)**, **16:9 Widescreen**, **4:3 Standard**, and **1:1 Square (Raw)**.
 
