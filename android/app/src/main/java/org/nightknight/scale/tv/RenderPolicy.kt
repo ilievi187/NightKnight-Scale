@@ -90,6 +90,43 @@ internal object RenderPolicy {
         return PixelRect((surface.width - width) / 2, (surface.height - height) / 2, width, height)
     }
 
+    /** Center the video geometry (SAR, rotation, and DAR mode) in the display with exact DAR aspect-fitting. */
+    fun contentViewport(
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+    ): PixelRect {
+        if (surface.width <= 0 || surface.height <= 0 || geometry.codedWidth <= 0 || geometry.codedHeight <= 0) {
+            return PixelRect(0, 0, 0, 0)
+        }
+        val dar = geometry.displayAspectRatio(aspectMode)
+        val surfaceAspect = surface.width.toDouble() / surface.height.toDouble()
+        val width: Int
+        val height: Int
+        if (dar >= surfaceAspect) {
+            width = surface.width
+            height = max(1, (surface.width / dar).roundToInt())
+        } else {
+            height = surface.height
+            width = max(1, (surface.height * dar).roundToInt())
+        }
+        return PixelRect((surface.width - width) / 2, (surface.height - height) / 2, width, height)
+    }
+
+    /** Select the largest aspect-preserving output for a video geometry. */
+    fun targetForGeometry(
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        maxTextureSize: Int,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+    ): PixelSize {
+        if (surface.width <= 0 || surface.height <= 0 || geometry.codedWidth <= 0 || geometry.codedHeight <= 0 || maxTextureSize <= 0) {
+            return PixelSize(0, 0)
+        }
+        val displaySize = geometry.effectiveDisplaySize(aspectMode)
+        return targetForSource(surface, displaySize, maxTextureSize)
+    }
+
     /** Generate an EASU chain with no stage exceeding 2× per axis. */
     fun easuStages(source: PixelSize, target: PixelSize): List<PixelSize> {
         if (source.width <= 0 || source.height <= 0 || target.width <= 0 || target.height <= 0) return emptyList()

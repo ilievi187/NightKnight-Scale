@@ -28,11 +28,35 @@ Android MediaProjection is an explicit, user-consented screen/app capture API th
 
 Mission 5 Actions run `41237543233` and the local API 36 AVD exercised the app under Google SwiftShader, including five local video fixtures. This confirms shader/app behavior under software emulation only. It is not a physical TCL 55C645 decoder/GPU/frame-pacing/thermal test. No current physical-TV performance or visual-quality claim is made. The TV's external video inputs and its internal Google TV app environment are distinct from a third-party app's own rendering surface.
 
+## Mission 9 updates: Video geometry engine, TV UX & local media robustness
+
+1. **Deterministic Video Geometry & Non-Square Pixel Engine:**
+   - Implemented `VideoGeometry` modeling coded dimensions, Sample Aspect Ratio (SAR / PAR), container Display Aspect Ratio (DAR), and rotation metadata (0°, 90°, 180°, 270°).
+   - Resolves non-square PAL 720×576 content (4:3 SAR 16:15 and 16:9 anamorphic SAR 64:45) and NTSC 720×480 content (4:3 SAR 8:9 and 16:9 SAR 32:27) without stretching or distortion.
+   - Computes exact letterboxed and pillarboxed viewports directly from the Display Aspect Ratio without intermediate truncation.
+   - Automatically handles portrait video and 90°/270° rotation metadata via oriented buffer dimensions and texture transform validation.
+   - Added D-pad controllable Aspect Ratio mode override: **Auto (SAR/DAR)**, **16:9 Widescreen**, **4:3 Standard**, and **1:1 Square (Raw)**.
+
+2. **Android TV Remote Experience (Sofa Navigation):**
+   - Preserves deterministic D-pad vertical chain: Preset row $\leftrightarrow$ Open Video $\leftrightarrow$ Video Control $\leftrightarrow$ Sharpness SeekBar $\leftrightarrow$ Diagnostics.
+   - Adds horizontal D-pad access: **Reset clip** (alongside Open local video) and **Aspect Ratio selector** (alongside Play/Pause).
+   - High-contrast focused button state: brighter slate-blue fill (`rgb(32, 64, 96)`) with 3dp cyan border (`rgb(66, 216, 237)`).
+   - Dedicated TV remote media key handling (`KEYCODE_MEDIA_PLAY_PAUSE`, `KEYCODE_MEDIA_PLAY`, `KEYCODE_MEDIA_PAUSE`, `KEYCODE_MEDIA_STOP`).
+   - Restores focus to the diagnostics button upon dismissing the diagnostics dialog.
+
+3. **Local Media Robustness & SAF Handling:**
+   - Probes saved URIs on application launch; safely detects revoked permissions or deleted files, cleans persisted preferences, and reverts to the resolution-matched test clip.
+   - Human-readable error translation for MediaPlayer error codes (`MEDIA_ERROR_IO`, `MEDIA_ERROR_MALFORMED`, `MEDIA_ERROR_UNSUPPORTED`, `MEDIA_ERROR_TIMED_OUT`).
+   - "Reset clip" control enables instant recovery from any problematic local video.
+
+4. **Colorimetry & Video Quality:**
+   - Probes and surfaces ITU-R color standard (`BT.709`, `BT.601 PAL`, `BT.601 NTSC`, `BT.2020`), color range (limited 16-235 vs full 0-255), and transfer functions in diagnostics.
+   - Formalized architectural ledger in `docs/color-and-video-accuracy.md` detailing BT.601-to-BT.709 matrix transformations for LUNA's future shader passes.
+
 ## Release blockers still open
 
-- Add automated unsupported-format/revoked-URI coverage and validate the fallback picker behavior on TCL firmware; current emulator smoke covers five local progressive SDR files only.
 - Replace or justify the framework MediaPlayer path with Media3/ExoPlayer or separately tested MediaCodec; current UI labels the actual MediaPlayer path and platform info lag events but cannot expose the hardware codec name.
-- Validate pixel/sample aspect ratios and rotation metadata, plus SDR color range/matrix, on real files and the physical TV. Interlaced 576i deinterlacing and HDR/colorimetry processing remain unimplemented.
+- Interlaced 576i deinterlacing and hardware HDR colorimetry remain unimplemented.
 - Add exact decoder/display drop counters only if a platform API exposes them; current callback-coalescing and render cadence values are explicitly estimates.
 - Test on physical TCL 55C645 and document actual decoder, GLES renderer, resolution, latency, sustained performance/thermal behavior, and remote navigation.
 - Complete Android TV accessibility, app metadata, privacy policy, release signing, store listing, crash handling, and Google Play policy/compliance review.

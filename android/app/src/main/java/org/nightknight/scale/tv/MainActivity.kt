@@ -45,12 +45,16 @@ class MainActivity : Activity() {
     private lateinit var videoSummary: TextView
     private lateinit var videoButton: Button
     private lateinit var openVideoButton: Button
+    private lateinit var resetVideoButton: Button
+    private lateinit var aspectRatioButton: Button
     private lateinit var diagnosticsButton: Button
     private lateinit var sharpnessSlider: SeekBar
     private val presetButtons = linkedMapOf<UpscalePreset, Button>()
     private var selectedPreset = UpscalePreset.BALANCED
+    private var selectedAspectMode = AspectRatioMode.AUTO
     private var selectedLocalVideoUri: Uri? = null
     private var decodedVideoSize: PixelSize? = null
+    private var decodedVideoGeometry: VideoGeometry? = null
     private var currentVideoSurfaceTexture: SurfaceTexture? = null
     private var currentVideoSource: VideoTestSource? = null
     private var videoSurface: Surface? = null
@@ -68,14 +72,30 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        selectedLocalVideoUri = preferences.getString("local_video_uri", null)?.let(Uri::parse)
+        val savedUriStr = preferences.getString("local_video_uri", null)
+        selectedLocalVideoUri = savedUriStr?.let { uriStr ->
+            val uri = Uri.parse(uriStr)
+            val accessible = runCatching {
+                contentResolver.openInputStream(uri)?.close()
+                true
+            }.getOrDefault(false)
+            if (accessible) {
+                uri
+            } else {
+                Log.w(TAG, "picker=saved-uri-inaccessible uri=$uriStr")
+                preferences.edit().remove("local_video_uri").apply()
+                null
+            }
+        }
         selectedPreset = UpscalePreset.fromId(preferences.getString("upscale_preset", null))
+        selectedAspectMode = AspectRatioMode.fromId(preferences.getString("aspect_mode", null))
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
             mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
         }
         renderer.mode = selectedPreset.renderMode
+        renderer.aspectMode = selectedAspectMode
         renderer.sharpnessProgress = preferences.getInt("sharpness_progress", selectedPreset.defaultSharpness)
         Log.i(TAG, "settings=loaded preset=${selectedPreset.id} sharpness=${renderer.sharpnessProgress}")
         glView = GLSurfaceView(this).apply {
@@ -220,23 +240,59 @@ class MainActivity : Activity() {
 
         videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
         panel.addView(videoSummary)
+
+        val openVideoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         openVideoButton = controlButton("Open local video…") { openLocalVideoPicker() }.apply {
             id = View.generateViewId()
+            contentDescription = "Open local video file using document or photo picker"
         }
+        openVideoRow.addView(openVideoButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+        resetVideoButton = controlButton("Reset clip") { resetToDemoClip() }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Reset to packaged resolution-matched test clip"
+        }
+        openVideoRow.addView(resetVideoButton, LinearLayout.LayoutParams(dp(130), dp(48)).apply {
+            marginStart = dp(6)
+        })
         panel.addView(
-            openVideoButton,
+            openVideoRow,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
                 topMargin = dp(5)
             },
         )
+
+        val videoControlRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         videoButton = controlButton("Video loading…") {
             toggleVideoPlayback()
         }.apply {
             id = View.generateViewId()
             isEnabled = false
+            contentDescription = "Play or pause video playback"
         }
+        videoControlRow.addView(videoButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+        aspectRatioButton = controlButton(aspectButtonLabel(selectedAspectMode)) {
+            cycleAspectRatioMode()
+        }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Cycle aspect ratio mode: Auto SAR, Force 16:9, Force 4:3, or 1:1 Square"
+        }
+        videoControlRow.addView(aspectRatioButton, LinearLayout.LayoutParams(dp(170), dp(48)).apply {
+            marginStart = dp(6)
+        })
         panel.addView(
-            videoButton,
+            videoControlRow,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
                 topMargin = dp(5)
             },
@@ -267,9 +323,21 @@ class MainActivity : Activity() {
             button.nextFocusDownId = openVideoButton.id
         }
         openVideoButton.nextFocusUpId = presetButtons[selectedPreset]?.id ?: View.NO_ID
+        openVideoButton.nextFocusRightId = resetVideoButton.id
         openVideoButton.nextFocusDownId = videoButton.id
+
+        resetVideoButton.nextFocusLeftId = openVideoButton.id
+        resetVideoButton.nextFocusUpId = presetButtons[selectedPreset]?.id ?: View.NO_ID
+        resetVideoButton.nextFocusDownId = aspectRatioButton.id
+
         videoButton.nextFocusUpId = openVideoButton.id
+        videoButton.nextFocusRightId = aspectRatioButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
+
+        aspectRatioButton.nextFocusLeftId = videoButton.id
+        aspectRatioButton.nextFocusUpId = resetVideoButton.id
+        aspectRatioButton.nextFocusDownId = sharpnessSlider.id
+
         sharpnessSlider.nextFocusUpId = videoButton.id
         panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
 
@@ -309,7 +377,7 @@ class MainActivity : Activity() {
         setOnFocusChangeListener { view, focused ->
             val selected = presetButtons.any { (preset, button) -> button === view && preset == selectedPreset }
             view.background = roundedBackground(
-                if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+                if (focused) Color.rgb(32, 64, 96) else if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (focused) Color.rgb(66, 216, 237) else if (selected) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
                 dp(10),
                 if (focused) dp(3) else dp(1),
@@ -323,7 +391,7 @@ class MainActivity : Activity() {
         presetButtons.forEach { (preset, button) ->
             val selected = preset == selectedPreset
             button.background = roundedBackground(
-                if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+                if (button.hasFocus()) Color.rgb(32, 64, 96) else if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (selected || button.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
                 dp(10),
                 if (button.hasFocus()) dp(3) else dp(1),
@@ -337,6 +405,7 @@ class MainActivity : Activity() {
         val saved = preferences.edit().putString("upscale_preset", preset.id).commit()
         if (!saved) Log.e(TAG, "settings=preset-save-failed id=${preset.id}")
         if (::openVideoButton.isInitialized) openVideoButton.nextFocusUpId = presetButtons[preset]?.id ?: View.NO_ID
+        if (::resetVideoButton.isInitialized) resetVideoButton.nextFocusUpId = presetButtons[preset]?.id ?: View.NO_ID
         if (::diagnosticsButton.isInitialized) diagnosticsButton.nextFocusDownId = presetButtons[preset]?.id ?: View.NO_ID
         logRenderMode(preset.renderMode)
         updatePresetButtons()
@@ -388,8 +457,21 @@ class MainActivity : Activity() {
         player.setOnVideoSizeChangedListener { _, width, height ->
             decodedVideoSize = PixelSize(width, height)
             val mime = selectedLocalVideoUri?.let { contentResolver.getType(it) } ?: "video/mp4"
-            decoderDescription = "MediaPlayer · platform codec · $mime · ${width}×$height"
-            glView.queueEvent { renderer.updateDecodedVideoSize(width, height) }
+            val existing = decodedVideoGeometry
+            val geo = if (existing != null && existing.codedWidth == width && existing.codedHeight == height) {
+                existing
+            } else {
+                val (sarW, sarH) = when {
+                    VideoGeometry.isPalResolution(width, height) -> VideoGeometry.PAL_4_3_SAR
+                    VideoGeometry.isNtscResolution(width, height) -> VideoGeometry.NTSC_4_3_SAR
+                    else -> Pair(1, 1)
+                }
+                existing?.copy(codedWidth = width, codedHeight = height)
+                    ?: VideoGeometry(codedWidth = width, codedHeight = height, sarWidth = sarW, sarHeight = sarH)
+            }
+            decodedVideoGeometry = geo
+            decoderDescription = "MediaPlayer · platform codec · $mime · ${geo.summary(selectedAspectMode)}"
+            glView.queueEvent { renderer.updateDecodedVideoGeometry(geo) }
             Log.i(TAG, "video=decoded-size ${width}x$height input=${inputLabel(source)} mime=$mime")
             videoSummary.text = "Playing ${inputLabel(source)} · decoded ${width}×$height into GLES"
         }
@@ -404,14 +486,34 @@ class MainActivity : Activity() {
             false
         }
         player.setOnErrorListener { _, what, extra ->
-            handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer error $what/$extra"))
+            val errorDesc = when (extra) {
+                MediaPlayer.MEDIA_ERROR_IO -> "I/O error"
+                MediaPlayer.MEDIA_ERROR_MALFORMED -> "Malformed bitstream"
+                MediaPlayer.MEDIA_ERROR_UNSUPPORTED -> "Unsupported format"
+                MediaPlayer.MEDIA_ERROR_TIMED_OUT -> "Decoder timed out"
+                else -> "error $what/$extra"
+            }
+            handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer $errorDesc"))
             true
         }
 
         runCatching {
             val localUri = selectedLocalVideoUri
-            if (localUri != null) player.setDataSource(this, localUri)
-            else player.setDataSource(copyVideoAssetToCache(source).absolutePath)
+            if (localUri != null) {
+                val probed = VideoMetadataReader.probeUri(this, localUri)
+                if (probed != null) {
+                    decodedVideoGeometry = probed.geometry
+                    decoderDescription = "MediaPlayer · platform codec · ${probed.mimeType} · ${probed.geometry.summary(selectedAspectMode)} · ${probed.geometry.colorStandardLabel} · ${probed.geometry.colorRangeLabel}"
+                }
+                player.setDataSource(this, localUri)
+            } else {
+                val cached = copyVideoAssetToCache(source)
+                val probed = VideoMetadataReader.probeFile(cached)
+                if (probed != null) {
+                    decodedVideoGeometry = probed.geometry
+                }
+                player.setDataSource(cached.absolutePath)
+            }
             player.setSurface(surface)
             player.prepareAsync()
         }.onFailure { failure ->
@@ -451,11 +553,67 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun cycleAspectRatioMode() {
+        val nextMode = selectedAspectMode.next()
+        selectedAspectMode = nextMode
+        preferences.edit().putString("aspect_mode", nextMode.id).apply()
+        renderer.setAspectRatioMode(nextMode)
+        aspectRatioButton.text = aspectButtonLabel(nextMode)
+        Log.i(TAG, "aspect_mode=${nextMode.id}")
+        updateDiagnostics()
+    }
+
+    private fun aspectButtonLabel(mode: AspectRatioMode): String = when (mode) {
+        AspectRatioMode.AUTO -> "Aspect: Auto"
+        AspectRatioMode.FIT_16_9 -> "Aspect: 16:9"
+        AspectRatioMode.FIT_4_3 -> "Aspect: 4:3"
+        AspectRatioMode.SQUARE_PIXELS -> "Aspect: 1:1"
+    }
+
+    private fun resetToDemoClip() {
+        stopVideoPlayback()
+        selectedLocalVideoUri = null
+        decodedVideoSize = null
+        decodedVideoGeometry = null
+        preferences.edit().remove("local_video_uri").apply()
+        videoPlaybackError = null
+        videoSummary.text = "Reset to packaged test clip · opening decoder…"
+        Log.i(TAG, "video=reset-to-demo")
+        if (activityResumed) startVideoPlaybackIfReady()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                toggleVideoPlayback()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_MEDIA_STOP -> {
+                stopVideoPlayback()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     private fun handleVideoPlaybackFailure(source: VideoTestSource, failure: Throwable) {
         Log.e(TAG, "video=error source=${source.assetPath}", failure)
-        videoPlaybackError = "${failure.message ?: failure.javaClass.simpleName}"
-        videoSummary.text = "Video input failed. Last decoded frame/chart remains visible."
+        val message = failure.message ?: failure.javaClass.simpleName
+        videoPlaybackError = message
+        val wasLocal = selectedLocalVideoUri != null
         stopVideoPlayback()
+        if (wasLocal) {
+            selectedLocalVideoUri = null
+            preferences.edit().remove("local_video_uri").apply()
+            videoSummary.text = "Video input failed ($message). Reverting to packaged test clip."
+            if (activityResumed) {
+                mainHandler.postDelayed({ startVideoPlaybackIfReady() }, 500L)
+            }
+        } else {
+            videoSummary.text = "Video input failed. Last decoded frame/chart remains visible."
+        }
     }
 
     private fun stopVideoPlayback() {
@@ -479,8 +637,8 @@ class MainActivity : Activity() {
         val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
         val targetText = if (state.processedTarget.width > 0) "processed target ${state.processedTarget}" else "processed target pending"
         val actualSource = decodedVideoSize ?: state.source
-        val sourceText = if (actualSource.width > 0) "source $actualSource" else "source pending"
-        resolutionSummary.text = "Display mode $displayMode  ·  $sourceText → $targetText  ·  $surfaceText"
+        val geoSummary = decodedVideoGeometry?.summary(selectedAspectMode) ?: "$actualSource"
+        resolutionSummary.text = "Display mode $displayMode  ·  $geoSummary → $targetText  ·  $surfaceText"
 
         gpuSummary.text = if (state.glVersion.isNotBlank()) {
             "${state.glVersion}  ·  ${state.gpuRenderer}  ·  max texture ${state.maxTextureSize}px"
@@ -509,7 +667,11 @@ class MainActivity : Activity() {
     private fun showDiagnostics() {
         val state = renderer.snapshot()
         val actualSource = decodedVideoSize ?: state.source
-        val viewport = RenderPolicy.contentViewport(state.surface, actualSource)
+        val viewport = if (state.geometry.codedWidth > 0 && state.geometry.codedHeight > 0) {
+            RenderPolicy.contentViewport(state.surface, state.geometry, state.aspectMode)
+        } else {
+            RenderPolicy.contentViewport(state.surface, actualSource)
+        }
         val message = buildString {
             appendLine("Preset: ${selectedPreset.label} (${state.mode.id})")
             appendLine("Input: $actualSource · output: ${state.processedTarget} · surface: ${state.surface}")
@@ -517,6 +679,8 @@ class MainActivity : Activity() {
             val textureMiB = state.estimatedRgbaTextureBytes / (1024f * 1024f)
             val memoryWarning = if (state.estimatedRgbaTextureBytes > RenderPolicy.MAX_RGBA_TEXTURE_BYTES) " · OVER budget (source memory irreducible)" else ""
             appendLine("RGBA render-target estimate: ${"%.1f".format(textureMiB)} MiB / 128 MiB budget$memoryWarning · excludes decoder/driver memory")
+            appendLine("Aspect ratio mode: ${state.aspectMode.label} · display aspect: ${state.geometry.aspectLabel(state.aspectMode)}")
+            appendLine("Colorimetry: ${state.geometry.colorStandardLabel} · ${state.geometry.colorRangeLabel} · ${state.geometry.colorTransferLabel}")
             appendLine("Decoder path: $decoderDescription")
             appendLine("Input frame callbacks: ${state.videoFrameCallbacks} · uploaded: ${state.decodedVideoFrames}")
             appendLine("Coalesced callbacks (estimated skipped): ${state.estimatedSkippedFrames}")
@@ -534,6 +698,9 @@ class MainActivity : Activity() {
             .setTitle("NightKnight · Diagnostics")
             .setMessage(message)
             .setPositiveButton("Close", null)
+            .setOnDismissListener {
+                diagnosticsButton.requestFocus()
+            }
             .show()
     }
 
