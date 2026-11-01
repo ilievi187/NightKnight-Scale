@@ -102,7 +102,8 @@ class MainActivity : Activity() {
             mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
         }
         renderer.validateExternalEasuOnce =
-            BuildConfig.DEBUG && intent.getBooleanExtra("nkscale_validate_easu_input", false)
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+                intent.getBooleanExtra("nkscale_validate_easu_input", false)
         if (renderer.validateExternalEasuOnce) Log.i(TAG, "easu_equivalence=scheduled debug_only=true")
         renderer.mode = selectedPreset.renderMode
         renderer.aspectMode = selectedAspectMode

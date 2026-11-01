@@ -135,6 +135,9 @@ internal class FsrDemoRenderer(
     @Volatile
     var sourceVideoFps: Float? = null
 
+    private val isDebuggableBuild =
+        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
     /** Test-only opt-in; runs one blocking pixel comparison on the GL thread, never in normal playback. */
     @Volatile
     var validateExternalEasuOnce = false
@@ -730,7 +733,7 @@ internal class FsrDemoRenderer(
             val hasDecodedFrame = decodedVideoFrames > 0L
             if (validateExternalEasuOnce && !externalEasuValidationConsumed && hasDecodedFrame) {
                 externalEasuValidationConsumed = true
-                if (!BuildConfig.DEBUG) {
+                if (!isDebuggableBuild) {
                     Log.w(TAG, "easu_equivalence=unavailable reason=debug-validation-disabled")
                 } else if (directEasuInput) {
                     val validation = runCatching { compareExternalEasuWithRgbaCopy() }
@@ -1314,7 +1317,7 @@ internal class FsrDemoRenderer(
     }
 
     private fun compareExternalEasuWithRgbaCopy(): EasuOutputDifference? {
-        check(BuildConfig.DEBUG) { "Pixel comparison is restricted to debug builds" }
+        check(isDebuggableBuild) { "Pixel comparison is restricted to debug builds" }
         check(externalEasuAvailable && externalInputTexture != 0) { "External EASU input is unavailable" }
         check(sourceFramebuffer != 0 && inputTexture != 0 && framebuffer != 0) {
             "EASU comparison render targets are unavailable"
