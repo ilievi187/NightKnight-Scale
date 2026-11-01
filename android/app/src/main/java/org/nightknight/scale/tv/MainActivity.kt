@@ -784,7 +784,13 @@ class MainActivity : Activity() {
             state.qualityFallbackReason?.let { appendLine("Quality fallback: $it") }
             state.shaderFallbackReason?.let { appendLine("Shader fallback: $it") }
             state.runtimeFallbackReason?.let { appendLine("Runtime fallback: $it") }
-            appendLine("Video input route: ${state.videoInputPath} · direct OES EASU ${if (state.externalEasuAvailable) "available" else "RGBA-copy fallback"}")
+            val externalEasuStatus = when {
+                !state.externalEasuAvailable -> "shader unavailable; RGBA-copy fallback"
+                state.externalEasuRejected -> "rejected by pixel comparison; RGBA-copy fallback"
+                state.externalEasuValidated -> "pixel-equivalent in this session"
+                else -> "not validated; RGBA-copy fallback"
+            }
+            appendLine("Video input route: ${state.videoInputPath} · direct OES EASU $externalEasuStatus")
             val rcasPath = when {
                 !state.effectiveMode.usesRcas -> "disabled"
                 state.geometry.codedWidth > 0 &&

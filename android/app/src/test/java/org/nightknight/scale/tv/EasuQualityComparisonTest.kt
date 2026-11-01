@@ -45,6 +45,22 @@ class EasuQualityComparisonTest {
     }
 
     @Test
+    fun reportsPerChannelErrorsAndLargestByteOffset() {
+        val reference = byteArrayOf(0, 10, 20, 30, 50, 60, 70, 80)
+        val candidate = byteArrayOf(0, 10, 20, 30, 50, 90, 70, 80)
+
+        val difference = EasuQualityComparison.compare(reference, candidate)
+
+        assertNotNull(difference)
+        assertEquals(5, difference!!.maximumErrorByteOffset)
+        assertEquals(1, difference.maximumErrorChannelIndex)
+        assertEquals(0f, difference.redMeanAbsoluteError, 0f)
+        assertEquals(15f, difference.greenMeanAbsoluteError, 0f)
+        assertEquals(0f, difference.blueMeanAbsoluteError, 0f)
+        assertEquals(0f, difference.alphaMeanAbsoluteError, 0f)
+    }
+
+    @Test
     fun mismatchedOrEmptyBuffersCannotBeCompared() {
         assertNull(EasuQualityComparison.compare(byteArrayOf(0), byteArrayOf(0, 1)))
         assertNull(EasuQualityComparison.compare(byteArrayOf(), byteArrayOf()))

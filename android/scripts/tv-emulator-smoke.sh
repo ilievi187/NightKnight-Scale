@@ -7,6 +7,7 @@ package_name="org.nightknight.scale.tv"
 activity_name="${package_name}/.MainActivity"
 
 mkdir -p "$output_dir"
+trap 'adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt" 2>/dev/null || true' EXIT
 adb wait-for-device
 target_device="$(adb get-serialno)"
 if [[ "$target_device" != emulator-* ]]; then
@@ -67,13 +68,56 @@ wait_for_log_occurrences() {
     exit 1
 }
 
-wait_for_new_performance_sample() {
-    local requested_mode="$1"
-    local marker="performance_sample requested=${requested_mode} effective=${requested_mode} "
-    local current_count expected_count
+press_preset() {
+    local preset_id="$1"
+    local description="$2"
+    local sample_mode="${3:-}"
+    local marker="preset=${preset_id} "
+    local current_count expected_count sample_marker sample_count expected_sample_count
     current_count="$(adb logcat -d -s NKScaleTV:I | grep -Fc "$marker" || true)"
     expected_count=$(( ${current_count:-0} + 1 ))
-    wait_for_log_occurrences "$marker" "$expected_count" "settled ${requested_mode} CPU/renderer sample"
+    if [[ -n "$sample_mode" ]]; then
+        sample_marker="performance_sample requested=${sample_mode} effective=${sample_mode} "
+        sample_count="$(adb logcat -d -s NKScaleTV:I | grep -Fc "$sample_marker" || true)"
+        expected_sample_count=$(( ${sample_count:-0} + 1 ))
+    fi
+    adb shell input keyevent KEYCODE_DPAD_CENTER
+    wait_for_log_occurrences "$marker" "$expected_count" "$description"
+    if [[ -n "$sample_mode" ]]; then
+        wait_for_log_occurrences "$sample_marker" "$expected_sample_count" "settled ${sample_mode} CPU/renderer sample"
+    fi
+}
+
+wait_for_first_performance_sample() {
+    local requested_mode="$1"
+    local marker="performance_sample requested=${requested_mode} effective=${requested_mode} "
+    wait_for_log_occurrences "$marker" 1 "first active ${requested_mode} CPU/renderer sample"
+}
+
+wait_for_easu_validation_result() {
+    for attempt in $(seq 1 90); do
+        local log_output
+        log_output="$(adb logcat -d -s NKScaleTV:I)"
+        if grep -Fq 'easu_equivalence=pass ' <<< "$log_output"; then
+            if grep -Fq 'easu_external=validated;' <<< "$log_output"; then
+                echo "Direct OES EASU passed pixel equivalence and was enabled for this debug session."
+                return 0
+            fi
+        elif grep -Fq 'easu_equivalence=fail ' <<< "$log_output"; then
+            if grep -Fq 'easu_external=disabled fallback=rgba-copy after output comparison' <<< "$log_output"; then
+                echo "Direct OES EASU differed; verified the explicit RGBA-copy fallback."
+                return 0
+            fi
+        elif grep -Fq 'easu_external=unavailable' <<< "$log_output" && \
+            grep -Fq 'video_frame=consumed' <<< "$log_output"; then
+            echo "Direct OES EASU shader unavailable; verified video-frame consumption for fallback."
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timed out waiting for EASU equivalence result or explicit fallback." >&2
+    adb logcat -d -s NKScaleTV:V AndroidRuntime:E >&2
+    return 1
 }
 
 assert_diagnostics_reachable_at_1080p() {
@@ -102,10 +146,11 @@ assert_diagnostics_reachable_at_1080p
 wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
 wait_for_log_marker 'video=playing' 'MediaPlayer prepare/start'
 wait_for_log_marker 'video_frame=consumed' 'decoded SurfaceTexture frame update'
-wait_for_log_marker 'easu_equivalence=pass' 'direct OES EASU matches RGBA-copy output' 90
+wait_for_log_marker 'video_frame=consumed path=rgba-copy' 'unvalidated direct EASU remains on RGBA reference input'
+wait_for_easu_validation_result
 wait_for_log_marker 'render_fps=' 'renderer callback FPS'
 wait_for_log_marker 'gpu_timer_query=' 'GPU timer-query capability detection'
-wait_for_new_performance_sample 'fsr1'
+wait_for_first_performance_sample 'fsr1'
 
 # Two moving decoded captures prove the packaged video is updating the GLES input.
 adb exec-out screencap -p > "$output_dir/video-motion-a.png"
@@ -129,35 +174,21 @@ adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
 adb shell input keyevent KEYCODE_DPAD_UP
 adb shell input keyevent KEYCODE_DPAD_UP
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=fsr1_denoise' 'active-video QUALITY preset'
-wait_for_new_performance_sample 'fsr1_denoise'
+press_preset 'quality' 'active-video QUALITY preset' 'fsr1_denoise'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 2 'active-video BALANCED preset'
-wait_for_new_performance_sample 'fsr1'
+press_preset 'balanced' 'active-video BALANCED preset' 'fsr1'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=easu_only' 'active-video PERFORMANCE preset'
-wait_for_new_performance_sample 'easu_only'
+press_preset 'performance' 'active-video PERFORMANCE preset' 'easu_only'
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 3 'active-video BALANCED before OFF'
-wait_for_new_performance_sample 'fsr1'
+press_preset 'balanced' 'active-video BALANCED before OFF'
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=fsr1_denoise' 2 'active-video revisit QUALITY'
+press_preset 'quality' 'active-video revisit QUALITY'
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=bilinear' 'active-video OFF preset'
-wait_for_new_performance_sample 'bilinear'
+press_preset 'off' 'active-video OFF preset' 'bilinear'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=fsr1_denoise' 3 'active-video return through QUALITY'
+press_preset 'quality' 'active-video return through QUALITY'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 4 'active-video return to BALANCED'
-wait_for_new_performance_sample 'fsr1'
+press_preset 'balanced' 'active-video return to BALANCED'
 
 # Freeze a stable frame for image-regression captures and the aspect-ratio control test.
 adb shell input keyevent KEYCODE_DPAD_DOWN
@@ -184,36 +215,29 @@ adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 # The smoke starts with BALANCED selected. Exercise QUALITY, BALANCED, PERFORMANCE and OFF using the TV remote.
 adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=fsr1_denoise' 4 'paused QUALITY screenshot mode'
+press_preset 'quality' 'paused QUALITY screenshot mode'
 sleep 1
 adb exec-out screencap -p > "$output_dir/quality-paused.png"
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 5 'return to BALANCED for paused screenshot'
+press_preset 'balanced' 'return to BALANCED for paused screenshot'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=easu_only' 2 'PERFORMANCE (EASU only)'
+press_preset 'performance' 'PERFORMANCE (EASU only)'
 sleep 1
 adb exec-out screencap -p > "$output_dir/performance-paused.png"
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 6 'return to BALANCED before OFF screenshot'
+press_preset 'balanced' 'return to BALANCED before OFF screenshot'
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=fsr1_denoise' 5 'revisit QUALITY for paused comparison'
+press_preset 'quality' 'revisit QUALITY for paused comparison'
 adb shell input keyevent KEYCODE_DPAD_LEFT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=bilinear' 2 'OFF preset for paused screenshot'
+press_preset 'off' 'OFF preset for paused screenshot'
 sleep 1
 adb exec-out screencap -p > "$output_dir/off-paused.png"
 
 # Return to BALANCED, set sharpness to 9, then restart and assert both settings reload.
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
+press_preset 'quality' 'return through QUALITY for final BALANCED'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
-adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 7 'restore BALANCED for RCAS setting test'
+press_preset 'balanced' 'restore BALANCED for RCAS setting test'
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
@@ -272,7 +296,7 @@ fi
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
-for marker in 'shaders=ready' 'gpu_timer_query=' 'easu_equivalence=pass' 'performance_sample requested=' 'video=playing' 'video_frame=consumed' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
+for marker in 'shaders=ready' 'gpu_timer_query=' 'easu_equivalence=' 'performance_sample requested=' 'video=playing' 'video_frame=consumed' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
     if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
         echo "Expected preset/settings emulator marker was not observed: $marker" >&2
         cat "$output_dir/preset-and-settings-logcat.txt" >&2

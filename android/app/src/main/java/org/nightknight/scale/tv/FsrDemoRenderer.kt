@@ -52,6 +52,8 @@ internal data class RendererSnapshot(
     val runtimeFallbackReason: String?,
     val videoInputPath: String,
     val externalEasuAvailable: Boolean,
+    val externalEasuValidated: Boolean,
+    val externalEasuRejected: Boolean,
     val videoSource: String,
     val decodedVideoFrames: Long,
     val videoInputError: String?,
@@ -209,6 +211,10 @@ internal class FsrDemoRenderer(
     private val shaderBindings = HashMap<Int, ShaderBindings>()
     @Volatile
     private var externalEasuAvailable = false
+    @Volatile
+    private var externalEasuValidated = false
+    @Volatile
+    private var externalEasuRejected = false
     private var inputTexture = 0
     private var allocatedSourceSize = PixelSize(0, 0)
     private var externalInputTexture = 0
@@ -309,6 +315,8 @@ internal class FsrDemoRenderer(
         runtimeFallbackReason = runtimeFallbackReason,
         videoInputPath = videoInputPath,
         externalEasuAvailable = externalEasuAvailable,
+        externalEasuValidated = externalEasuValidated,
+        externalEasuRejected = externalEasuRejected,
         videoSource = selectedVideoSource?.label ?: "Waiting for output size",
         decodedVideoFrames = decodedVideoFrames,
         videoInputError = videoInputError,
@@ -338,6 +346,8 @@ internal class FsrDemoRenderer(
         externalEasuProgram = 0
         shaderBindings.clear()
         externalEasuAvailable = false
+        externalEasuValidated = false
+        externalEasuRejected = false
         externalEasuValidationConsumed = false
         inputTexture = 0
         allocatedSourceSize = PixelSize(0, 0)
@@ -394,7 +404,7 @@ internal class FsrDemoRenderer(
             Log.i(
                 TAG,
                 "shaders=ready renderer=$gpuRenderer version=$glVersion videoCopy=${externalCopyProgram != 0} " +
-                    "easu=${easuProgram != 0} easuExternal=$externalEasuAvailable rcas=${rcasProgram != 0} " +
+                    "easu=${easuProgram != 0} easuExternalProgram=$externalEasuAvailable rcas=${rcasProgram != 0} " +
                     "denoise=${denoiseProgram != 0}",
             )
         }
@@ -547,6 +557,9 @@ internal class FsrDemoRenderer(
         }
         if (geometry == videoGeometry && newSourceSize == sourceSize && newTargetSize == targetSize) return
 
+        externalEasuValidated = false
+        externalEasuRejected = false
+        externalEasuValidationConsumed = false
         videoGeometry = geometry
         sourceSize = newSourceSize
         targetSize = newTargetSize
@@ -713,11 +726,17 @@ internal class FsrDemoRenderer(
         try {
             val activeMode = resolveActiveMode()
             effectiveMode = activeMode
-            var directEasuInput = externalEasuAvailable &&
-                activeMode.usesEasu && !activeMode.usesNoiseReduction && externalInputTexture != 0
+            val externalEasuValidationEligible = externalEasuAvailable && !externalEasuRejected &&
+                externalInputTexture != 0 && activeMode.usesEasu && !activeMode.usesNoiseReduction
+            var directEasuInput = EasuExternalInputPolicy.shouldUseDirectInput(
+                programAvailable = externalEasuAvailable && !externalEasuRejected,
+                outputEquivalent = externalEasuValidated,
+                externalTextureAvailable = externalInputTexture != 0,
+                mode = activeMode,
+            )
             val directPresentationInput = activeMode == RenderMode.BILINEAR &&
                 externalCopyProgram != 0 && externalInputTexture != 0
-            var copyDecodedFrameToRgba = when {
+            val copyDecodedFrameToRgba = when {
                 activeMode.usesNoiseReduction -> true
                 activeMode.usesEasu -> !directEasuInput
                 else -> !directPresentationInput
@@ -731,37 +750,51 @@ internal class FsrDemoRenderer(
                 updateDecodedVideoFrame(copyToRgba = copyDecodedFrameToRgba, directEasuInput = directEasuInput)
             }
             val hasDecodedFrame = decodedVideoFrames > 0L
-            if (validateExternalEasuOnce && !externalEasuValidationConsumed && hasDecodedFrame) {
+            if (validateExternalEasuOnce && !externalEasuValidationConsumed && hasDecodedFrame && externalEasuValidationEligible) {
                 externalEasuValidationConsumed = true
                 if (!isDebuggableBuild) {
                     Log.w(TAG, "easu_equivalence=unavailable reason=debug-validation-disabled")
-                } else if (directEasuInput) {
+                } else {
                     val validation = runCatching { compareExternalEasuWithRgbaCopy() }
                     val difference = validation.getOrNull()
                     val passed = difference != null && EasuQualityComparison.isEquivalent(difference)
                     val validationReason = validation.exceptionOrNull()?.javaClass?.simpleName
                         ?: if (difference == null) "invalid-output" else if (passed) "within-threshold" else "pixel-difference-over-threshold"
+                    val maxErrorPixelIndex = difference?.maximumErrorByteOffset?.div(4)
+                    val maxErrorPosition = maxErrorPixelIndex?.let { pixelIndex ->
+                        if (targetSize.width > 0) "${pixelIndex % targetSize.width},${pixelIndex / targetSize.width}" else "N/A"
+                    } ?: "N/A"
+                    val maxErrorChannel = listOf("r", "g", "b", "a")
+                        .getOrNull(difference?.maximumErrorChannelIndex ?: -1) ?: "N/A"
                     Log.i(
                         TAG,
                         "easu_equivalence=${if (passed) "pass" else "fail"} " +
                             "mae_lsb=${difference?.let { "%.4f".format(it.meanAbsoluteError) } ?: "N/A"} " +
-                            "max_lsb=${difference?.maximumAbsoluteError ?: "N/A"} " +
+                            "mae_rgba_lsb=${difference?.let { "%.3f,%.3f,%.3f,%.3f".format(it.redMeanAbsoluteError, it.greenMeanAbsoluteError, it.blueMeanAbsoluteError, it.alphaMeanAbsoluteError) } ?: "N/A"} " +
+                            "max_lsb=${difference?.maximumAbsoluteError ?: "N/A"} max_pixel=${maxErrorPosition} max_channel=$maxErrorChannel " +
                             "psnr_db=${difference?.let { if (it.psnrDb.isInfinite()) "inf" else "%.2f".format(it.psnrDb) } ?: "N/A"} " +
                             "channels=${difference?.comparedChannels ?: 0} reason=$validationReason",
                     )
+                    Log.i(
+                        TAG,
+                        "easu_equivalence_transform=source_${sourceSize.width}x${sourceSize.height} " +
+                            textureTransform.joinToString(",", prefix = "matrix=") { "%.5f".format(it) },
+                    )
                     resetCpuSubmitWindows()
                     performanceSampleWindowStartNs = System.nanoTime()
-                    if (!passed) {
-                        externalEasuAvailable = false
+                    if (passed) {
+                        externalEasuValidated = true
+                        externalEasuRejected = false
+                        directEasuInput = true
+                        videoInputPath = "direct-easu-oes-validated"
+                        Log.i(TAG, "easu_external=validated; direct EASU enabled for this session")
+                    } else {
+                        externalEasuValidated = false
+                        externalEasuRejected = true
                         directEasuInput = false
-                        copyDecodedFrameToRgba = true
                         videoInputPath = "rgba-copy-after-equivalence-failure"
-                        runCatching { copyExternalVideoToRgba() }
-                            .onFailure { failure -> Log.e(TAG, "Fallback OES→RGBA copy failed", failure) }
                         Log.w(TAG, "easu_external=disabled fallback=rgba-copy after output comparison")
                     }
-                } else {
-                    Log.i(TAG, "easu_equivalence=unavailable reason=external-path-not-active")
                 }
             }
 
@@ -1273,6 +1306,9 @@ internal class FsrDemoRenderer(
     private fun createExternalVideoSurface(source: VideoTestSource) {
         if (decodedSurfaceTexture != null && surfaceVideoSource == source) return
 
+        externalEasuValidated = false
+        externalEasuRejected = false
+        externalEasuValidationConsumed = false
         decodedSurfaceTexture?.setOnFrameAvailableListener(null)
         decodedSurfaceTexture?.release()
         if (externalInputTexture != 0) {
