@@ -84,6 +84,7 @@ internal class FsrDemoRenderer(
         const val GL_TIME_ELAPSED_EXT = 0x88BF
         const val GL_GPU_DISJOINT_EXT = 0x8FBB
         const val PERFORMANCE_SAMPLE_INTERVAL_NS = 2_000_000_000L
+        const val FALLBACK_SOURCE_ACTIVITY_TIMEOUT_NS = 1_000_000_000L
     }
 
     @Volatile
@@ -159,6 +160,7 @@ internal class FsrDemoRenderer(
 
     private val totalVideoFrameCallbacks = AtomicLong()
     private val pendingVideoFrameCallbacks = AtomicLong()
+    private val lastVideoFrameCallbackNs = AtomicLong()
     private val decoderLagEvents = AtomicLong()
     private var previousFrameStartNs = 0L
     private var frameIntervalWindowStartNs = 0L
@@ -361,6 +363,7 @@ internal class FsrDemoRenderer(
         easuIntermediateFramebufferA = 0
         easuIntermediateFramebufferB = 0
         frameAvailable = false
+        lastVideoFrameCallbackNs.set(0L)
         allocationFallbackReason = null
         qualityFallbackReason = null
         shaderFallbackReason = null
@@ -559,7 +562,6 @@ internal class FsrDemoRenderer(
 
         externalEasuValidated = false
         externalEasuRejected = false
-        externalEasuValidationConsumed = false
         videoGeometry = geometry
         sourceSize = newSourceSize
         targetSize = newTargetSize
@@ -712,8 +714,15 @@ internal class FsrDemoRenderer(
         val intervalWindowCompleted = recordFrameInterval(frameStartNs)
         applyRequestedMode()
         maybeLogPerformanceSample(frameStartNs)
-        if (intervalWindowCompleted && decodedVideoFrames >= minimumFramesForBudgetCheck()) {
+        val recentSourceFrameActivity = VideoActivityPolicy.hasRecentFrameCallback(
+            lastCallbackNs = lastVideoFrameCallbackNs.get(),
+            nowNs = System.nanoTime(),
+            maxIdleNs = FALLBACK_SOURCE_ACTIVITY_TIMEOUT_NS,
+        )
+        if (intervalWindowCompleted && decodedVideoFrames >= minimumFramesForBudgetCheck() && recentSourceFrameActivity) {
             updateRuntimeFallbackForFrameBudget()
+        } else if (!recentSourceFrameActivity) {
+            runtimeRenderFallbackPolicy.reset()
         }
         if (error != null || presentProgram == 0 || (inputTexture == 0 && externalInputTexture == 0)) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -1328,7 +1337,9 @@ internal class FsrDemoRenderer(
         surfaceTexture.setDefaultBufferSize(source.size.width, source.size.height)
         surfaceTexture.setOnFrameAvailableListener(
             {
-                surfaceCallbackCadence.record(System.nanoTime())?.let { surfaceTextureCallbackFps = it }
+                val callbackNs = System.nanoTime()
+                lastVideoFrameCallbackNs.set(callbackNs)
+                surfaceCallbackCadence.record(callbackNs)?.let { surfaceTextureCallbackFps = it }
                 totalVideoFrameCallbacks.incrementAndGet()
                 pendingVideoFrameCallbacks.incrementAndGet()
                 frameAvailable = true
@@ -1342,6 +1353,7 @@ internal class FsrDemoRenderer(
         decodedVideoFrames = 0L
         totalVideoFrameCallbacks.set(0L)
         pendingVideoFrameCallbacks.set(0L)
+        lastVideoFrameCallbackNs.set(0L)
         estimatedSkippedFrames = 0L
         consumedMediaTimestampFps = null
         surfaceTextureCallbackFps = null

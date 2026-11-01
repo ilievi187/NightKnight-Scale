@@ -296,6 +296,17 @@ fi
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
+validation_result_count="$(grep -Ec 'NKScaleTV: easu_equivalence=(pass|fail) ' "$output_dir/logcat.txt" || true)"
+if [[ "$validation_result_count" -eq 0 ]]; then
+    if ! grep -Fq 'easu_external=unavailable' "$output_dir/logcat.txt"; then
+        echo "EASU equivalence probe produced no result and no explicit unavailable fallback" >&2
+        exit 1
+    fi
+elif [[ "$validation_result_count" -ne 1 ]]; then
+    echo "Expected exactly one per-session EASU equivalence result; saw $validation_result_count" >&2
+    exit 1
+fi
+
 for marker in 'shaders=ready' 'gpu_timer_query=' 'easu_equivalence=' 'performance_sample requested=' 'video=playing' 'video_frame=consumed' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
     if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
         echo "Expected preset/settings emulator marker was not observed: $marker" >&2
