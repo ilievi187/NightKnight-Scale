@@ -62,22 +62,26 @@ wait_for_log_occurrences() {
 }
 
 assert_diagnostics_reachable_at_1080p() {
+    echo "1080p diagnostics test: waiting for startup at density 400"
     wait_for_log_marker 'shaders=ready' 'GLES initialization at 1080p dense UI scale'
     wait_for_log_marker 'video_frame=uploaded' 'video frame at 1080p dense UI scale'
     wait_for_log_marker 'surface=1920×1080' '1920x1080 GLES surface'
+    echo "1080p diagnostics test: startup ready; sending four D-pad DOWN events"
 
     # Focus chain: selected preset -> picker -> playback -> sharpness -> Diagnostics.
     for _ in 1 2 3 4; do adb shell input keyevent KEYCODE_DPAD_DOWN; done
     sleep 1
-    adb shell uiautomator dump /sdcard/nkscale-diagnostics-focused.xml >/dev/null 2>&1
-    adb pull /sdcard/nkscale-diagnostics-focused.xml "$output_dir/control-panel-focused-1080p.xml" >/dev/null 2>&1
+    echo "1080p diagnostics test: dumping focused control hierarchy"
+    adb shell uiautomator dump /sdcard/nkscale-diagnostics-focused.xml
+    adb pull /sdcard/nkscale-diagnostics-focused.xml "$output_dir/control-panel-focused-1080p.xml"
     python3 android/scripts/assert_tv_diagnostics.py focused \
         "$output_dir/control-panel-focused-1080p.xml" --width 1920 --height 1080
 
+    echo "1080p diagnostics test: opening focused Diagnostics button"
     adb shell input keyevent KEYCODE_DPAD_CENTER
     sleep 1
-    adb shell uiautomator dump /sdcard/nkscale-diagnostics-open.xml >/dev/null 2>&1
-    adb pull /sdcard/nkscale-diagnostics-open.xml "$output_dir/control-panel-dialog-1080p.xml" >/dev/null 2>&1
+    adb shell uiautomator dump /sdcard/nkscale-diagnostics-open.xml
+    adb pull /sdcard/nkscale-diagnostics-open.xml "$output_dir/control-panel-dialog-1080p.xml"
     python3 android/scripts/assert_tv_diagnostics.py dialog "$output_dir/control-panel-dialog-1080p.xml"
     adb shell input keyevent KEYCODE_BACK
 
@@ -86,6 +90,7 @@ assert_diagnostics_reachable_at_1080p() {
     adb shell wm density reset >/dev/null
     adb logcat -c
     adb shell am start -W -n "$activity_name"
+    echo "1080p diagnostics test: passed; restored default density"
 }
 
 assert_diagnostics_reachable_at_1080p
