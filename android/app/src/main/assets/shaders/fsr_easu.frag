@@ -1,11 +1,21 @@
 #version 300 es
+#ifdef EASU_EXTERNAL_INPUT
+#extension GL_OES_EGL_image_external_essl3 : require
+#endif
 precision highp float;
 precision highp int;
 
 // GLES 3.0 port of AMD FidelityFX FSR 1.0 EASU (single-channel 32-bit path).
 // Neighborhood loads replace Vulkan textureGather callbacks; direction, adaptive
 // Lanczos-like taps, and the 2x2 anti-ringing clamp follow the upstream algorithm.
+// The optional OES input path samples the same source texel centers and keeps the
+// EASU equations identical while avoiding an intermediate OES→RGBA copy.
+#ifdef EASU_EXTERNAL_INPUT
+uniform samplerExternalOES uInput;
+uniform mat4 uTextureTransform;
+#else
 uniform sampler2D uInput;
+#endif
 uniform vec2 uInputSize;
 uniform vec2 uOutputSize;
 uniform int uFlipInputY;
@@ -13,7 +23,14 @@ out vec4 fragColor;
 
 vec3 loadInput(ivec2 p) {
     ivec2 limit = ivec2(uInputSize) - ivec2(1);
-    return texelFetch(uInput, clamp(p, ivec2(0), limit), 0).rgb;
+    p = clamp(p, ivec2(0), limit);
+#ifdef EASU_EXTERNAL_INPUT
+    vec2 uv = (vec2(p) + vec2(0.5)) / uInputSize;
+    uv = (uTextureTransform * vec4(uv, 0.0, 1.0)).xy;
+    return texture(uInput, uv).rgb;
+#else
+    return texelFetch(uInput, p, 0).rgb;
+#endif
 }
 
 float luma2(vec3 c) {

@@ -176,7 +176,7 @@ adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_app_log 'video=reset-to-demo'
 wait_for_app_log 'video=playing source=test-videos/scale-test-'
-wait_for_app_log 'video_frame=uploaded'
+wait_for_app_log 'video_frame=consumed'
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/demo-reset-logcat.txt"
 
 echo "SAF/Photo Picker local-file playback smoke passed: 25/30/50/60 fps SDR clips, 4:3/16:9/portrait aspect ratios and 576p. D-pad reset returned to packaged playback. Emulator-only; not a physical TV test."

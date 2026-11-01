@@ -67,10 +67,19 @@ wait_for_log_occurrences() {
     exit 1
 }
 
+wait_for_new_performance_sample() {
+    local requested_mode="$1"
+    local marker="performance_sample requested=${requested_mode} effective=${requested_mode} "
+    local current_count expected_count
+    current_count="$(adb logcat -d -s NKScaleTV:I | grep -Fc "$marker" || true)"
+    expected_count=$(( ${current_count:-0} + 1 ))
+    wait_for_log_occurrences "$marker" "$expected_count" "settled ${requested_mode} CPU/renderer sample"
+}
+
 assert_diagnostics_reachable_at_1080p() {
     echo "1080p diagnostics test: waiting for startup at density 400"
     wait_for_log_marker 'shaders=ready' 'GLES initialization at 1080p dense UI scale'
-    wait_for_log_marker 'video_frame=uploaded' 'video frame at 1080p dense UI scale'
+    wait_for_log_marker 'video_frame=consumed' 'video frame at 1080p dense UI scale'
     wait_for_log_marker 'surface=1920×1080' '1920x1080 GLES surface'
 
     # Focus chain: selected preset -> picker -> playback -> sharpness -> Diagnostics.
@@ -84,7 +93,7 @@ assert_diagnostics_reachable_at_1080p() {
     adb shell am force-stop "$package_name"
     adb shell wm density reset >/dev/null
     adb logcat -c
-    adb shell am start -W -n "$activity_name"
+    adb shell am start -W -n "$activity_name" --ez nkscale_validate_easu_input true
     echo "1080p diagnostics test: passed; restored default density"
 }
 
@@ -92,9 +101,11 @@ assert_diagnostics_reachable_at_1080p
 
 wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
 wait_for_log_marker 'video=playing' 'MediaPlayer prepare/start'
-wait_for_log_marker 'video_frame=uploaded' 'decoded SurfaceTexture frame upload'
+wait_for_log_marker 'video_frame=consumed' 'decoded SurfaceTexture frame update'
+wait_for_log_marker 'easu_equivalence=pass' 'direct OES EASU matches RGBA-copy output' 90
 wait_for_log_marker 'render_fps=' 'renderer callback FPS'
 wait_for_log_marker 'gpu_timer_query=' 'GPU timer-query capability detection'
+wait_for_new_performance_sample 'fsr1'
 
 # Two moving decoded captures prove the packaged video is updating the GLES input.
 adb exec-out screencap -p > "$output_dir/video-motion-a.png"
@@ -112,8 +123,47 @@ sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-a.png"
 sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-b.png"
+
+# Benchmark each requested preset while the decoder is actively supplying frames.
+# Renderer callback cadence is recorded only as renderer cadence, never display FPS.
+adb shell input keyevent KEYCODE_DPAD_UP
+adb shell input keyevent KEYCODE_DPAD_UP
+adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'video=paused' 2 'second pause after resume-motion check'
+wait_for_log_marker 'mode=fsr1_denoise' 'active-video QUALITY preset'
+wait_for_new_performance_sample 'fsr1_denoise'
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'preset=balanced' 2 'active-video BALANCED preset'
+wait_for_new_performance_sample 'fsr1'
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'mode=easu_only' 'active-video PERFORMANCE preset'
+wait_for_new_performance_sample 'easu_only'
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'preset=balanced' 3 'active-video BALANCED before OFF'
+wait_for_new_performance_sample 'fsr1'
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'mode=fsr1_denoise' 2 'active-video revisit QUALITY'
+adb shell input keyevent KEYCODE_DPAD_LEFT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_marker 'mode=bilinear' 'active-video OFF preset'
+wait_for_new_performance_sample 'bilinear'
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'mode=fsr1_denoise' 3 'active-video return through QUALITY'
+adb shell input keyevent KEYCODE_DPAD_RIGHT
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'preset=balanced' 4 'active-video return to BALANCED'
+wait_for_new_performance_sample 'fsr1'
+
+# Freeze a stable frame for image-regression captures and the aspect-ratio control test.
+adb shell input keyevent KEYCODE_DPAD_DOWN
+adb shell input keyevent KEYCODE_DPAD_DOWN
+adb shell input keyevent KEYCODE_DPAD_CENTER
+wait_for_log_occurrences 'video=paused' 2 'pause after active-video preset benchmarks'
 # Cycle every explicit aspect override from the focused Play/Pause row, then return to the preset row.
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
@@ -135,26 +185,26 @@ adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 adb exec-out screencap -p > "$output_dir/fsr1-paused.png"
 adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=fsr1_denoise' 'QUALITY (EASU + NR + RCAS)'
+wait_for_log_occurrences 'mode=fsr1_denoise' 4 'paused QUALITY screenshot mode'
 sleep 1
 adb exec-out screencap -p > "$output_dir/quality-paused.png"
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 2 'return to BALANCED'
+wait_for_log_occurrences 'preset=balanced' 5 'return to BALANCED for paused screenshot'
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=easu_only' 'PERFORMANCE (EASU only)'
+wait_for_log_occurrences 'mode=easu_only' 2 'PERFORMANCE (EASU only)'
 sleep 1
 adb exec-out screencap -p > "$output_dir/performance-paused.png"
 adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 3 'return to BALANCED before OFF'
+wait_for_log_occurrences 'preset=balanced' 6 'return to BALANCED before OFF screenshot'
 adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'mode=fsr1_denoise' 2 'revisit QUALITY'
+wait_for_log_occurrences 'mode=fsr1_denoise' 5 'revisit QUALITY for paused comparison'
 adb shell input keyevent KEYCODE_DPAD_LEFT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_marker 'mode=bilinear' 'OFF preset'
+wait_for_log_occurrences 'mode=bilinear' 2 'OFF preset for paused screenshot'
 sleep 1
 adb exec-out screencap -p > "$output_dir/off-paused.png"
 
@@ -163,7 +213,7 @@ adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
 adb shell input keyevent KEYCODE_DPAD_RIGHT
 adb shell input keyevent KEYCODE_DPAD_CENTER
-wait_for_log_occurrences 'preset=balanced' 4 'restore BALANCED for RCAS setting test'
+wait_for_log_occurrences 'preset=balanced' 7 'restore BALANCED for RCAS setting test'
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
@@ -181,7 +231,10 @@ if ! grep -Fq 'NightKnight · Diagnostics' "$output_dir/diagnostics-dialog.xml" 
    ! grep -Fq 'RGBA render-target estimate' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'GPU execution time' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'Display presentation timing' "$output_dir/diagnostics-dialog.xml" || \
-   ! grep -Fq 'SurfaceTexture callback cadence' "$output_dir/diagnostics-dialog.xml"; then
+   ! grep -Fq 'SurfaceTexture callback cadence' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'CPU submit windows avg/max' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'CPU pass submit avg/max' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'Video input route' "$output_dir/diagnostics-dialog.xml"; then
     echo "D-pad diagnostics dialog did not expose its title and renderer metrics" >&2
     cat "$output_dir/diagnostics-dialog.xml" >&2
     exit 1
@@ -194,12 +247,32 @@ wait_for_log_marker 'video=playing source=' 'packaged video resume after restart
 
 # Save the settings/preset navigation log before local-file scenarios replace the current logcat buffer.
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/preset-and-settings-logcat.txt"
+grep -F 'performance_sample requested=' "$output_dir/preset-and-settings-logcat.txt" > "$output_dir/performance-samples.logcat.txt" || true
+: > "$output_dir/performance-samples-active.logcat.txt"
+for benchmark_mode in fsr1_denoise fsr1 easu_only bilinear; do
+    if ! grep -Fq "performance_sample requested=${benchmark_mode} " "$output_dir/performance-samples.logcat.txt"; then
+        echo "Missing settled performance sample for requested mode $benchmark_mode" >&2
+        cat "$output_dir/performance-samples.logcat.txt" >&2
+        exit 1
+    fi
+    active_samples="$(grep -F "performance_sample requested=${benchmark_mode} effective=${benchmark_mode} " "$output_dir/performance-samples.logcat.txt" | grep -Fv 'cpu_input_update_avg_ms=N/A' || true)"
+    if [ -z "$active_samples" ]; then
+        echo "Missing active-decoder performance sample for requested mode $benchmark_mode" >&2
+        cat "$output_dir/performance-samples.logcat.txt" >&2
+        exit 1
+    fi
+    printf '%s\n' "$active_samples" >> "$output_dir/performance-samples-active.logcat.txt"
+done
+if grep -Fq 'display_fps=' "$output_dir/performance-samples.logcat.txt"; then
+    echo "Performance sample incorrectly reports renderer callbacks as display FPS" >&2
+    exit 1
+fi
 
 # Exercise actual local selection/playback at 25/30/50/60 fps and portrait/576p aspect shapes.
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
-for marker in 'shaders=ready' 'gpu_timer_query=' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
+for marker in 'shaders=ready' 'gpu_timer_query=' 'easu_equivalence=pass' 'performance_sample requested=' 'video=playing' 'video_frame=consumed' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9' 'aspect_mode=16_9' 'aspect_mode=4_3' 'aspect_mode=1_1' 'aspect_mode=auto'; do
     if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
         echo "Expected preset/settings emulator marker was not observed: $marker" >&2
         cat "$output_dir/preset-and-settings-logcat.txt" >&2

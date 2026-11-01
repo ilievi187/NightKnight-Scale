@@ -28,6 +28,7 @@ internal data class RendererSnapshot(
     val maxTextureSize: Int,
     val rendererCallbackFps: Float,
     val cpuGlSubmitMs: Float?,
+    val cpuTimings: RenderCpuTimings,
     val lastFrameIntervalMs: Float?,
     val averageFrameIntervalMs: Float?,
     val maximumFrameIntervalMs: Float?,
@@ -48,6 +49,9 @@ internal data class RendererSnapshot(
     val allocationFallbackReason: String?,
     val qualityFallbackReason: String?,
     val shaderFallbackReason: String?,
+    val runtimeFallbackReason: String?,
+    val videoInputPath: String,
+    val externalEasuAvailable: Boolean,
     val videoSource: String,
     val decodedVideoFrames: Long,
     val videoInputError: String?,
@@ -59,10 +63,25 @@ internal class FsrDemoRenderer(
     private val context: Context,
     private val onVideoSurfaceAvailable: (SurfaceTexture, VideoTestSource) -> Unit,
 ) : GLSurfaceView.Renderer {
+    private data class ShaderBindings(
+        val position: Int,
+        val texCoord: Int,
+        val input: Int,
+        val inputSize: Int,
+        val outputSize: Int,
+        val flipInputY: Int,
+        val sharpnessScale: Int,
+        val viewportOrigin: Int,
+        val strength: Int,
+        val flipY: Int,
+        val textureTransform: Int,
+    )
+
     private companion object {
         const val TAG = "NKScaleTV"
         const val GL_TIME_ELAPSED_EXT = 0x88BF
         const val GL_GPU_DISJOINT_EXT = 0x8FBB
+        const val PERFORMANCE_SAMPLE_INTERVAL_NS = 2_000_000_000L
     }
 
     @Volatile
@@ -116,6 +135,11 @@ internal class FsrDemoRenderer(
     @Volatile
     var sourceVideoFps: Float? = null
 
+    /** Test-only opt-in; runs one blocking pixel comparison on the GL thread, never in normal playback. */
+    @Volatile
+    var validateExternalEasuOnce = false
+
+    private var externalEasuValidationConsumed = false
     @Volatile
     private var surfaceTextureCallbackFps: Float? = null
 
@@ -159,6 +183,15 @@ internal class FsrDemoRenderer(
     @Volatile
     private var shaderFallbackReason: String? = null
 
+    private val runtimeRenderFallbackPolicy = RuntimeRenderFallbackPolicy()
+
+    @Volatile
+    private var runtimeEffectiveMode: RenderMode? = null
+
+    @Volatile
+    private var runtimeFallbackReason: String? = null
+
+    private var lastFallbackSourceFps: Float? = null
     @Volatile
     private var effectiveMode = RenderMode.FSR1
 
@@ -169,7 +202,12 @@ internal class FsrDemoRenderer(
     private var presentProgram = 0
     private var denoiseProgram = 0
     private var externalCopyProgram = 0
+    private var externalEasuProgram = 0
+    private val shaderBindings = HashMap<Int, ShaderBindings>()
+    @Volatile
+    private var externalEasuAvailable = false
     private var inputTexture = 0
+    private var allocatedSourceSize = PixelSize(0, 0)
     private var externalInputTexture = 0
     @Volatile
     private var denoisedTexture = 0
@@ -185,6 +223,7 @@ internal class FsrDemoRenderer(
     private var rcasFramebuffer = 0
     private var easuIntermediateFramebufferA = 0
     private var easuIntermediateFramebufferB = 0
+    private var easuStageSizes: List<PixelSize> = emptyList()
     private var decodedSurfaceTexture: SurfaceTexture? = null
     private var surfaceVideoSource: VideoTestSource? = null
     private var textureTransform = FloatArray(16)
@@ -200,11 +239,26 @@ internal class FsrDemoRenderer(
     @Volatile
     private var videoInputError: String? = null
 
+    @Volatile
+    private var videoInputPath = "rgba-copy"
+
+    private val frameCpuSubmitWindow = CpuSubmitWindow()
+    private val inputUpdateCpuSubmitWindow = CpuSubmitWindow()
+    private val denoiseCpuSubmitWindow = CpuSubmitWindow()
+    private val easuCpuSubmitWindow = CpuSubmitWindow()
+    private val rcasCpuSubmitWindow = CpuSubmitWindow()
+    private val presentCpuSubmitWindow = CpuSubmitWindow()
+
+    @Volatile
+    private var latestCpuTimings = RenderCpuTimings(null, null, null, null, null, null)
+
+    private var performanceSampleWindowStartNs = 0L
     private var quad: FloatBuffer = createQuadBuffer()
     private var framesInWindow = 0
     private var fpsWindowStartNs = 0L
     private var renderedFrames = 0L
     private var loggedFirstFps = false
+    private var skipNextFrameCpuSubmitSample = false
 
     fun snapshot() = RendererSnapshot(
         source = sourceSize,
@@ -215,6 +269,7 @@ internal class FsrDemoRenderer(
         maxTextureSize = maxTextureSize,
         rendererCallbackFps = rendererCallbackFps,
         cpuGlSubmitMs = cpuGlSubmitMs,
+        cpuTimings = latestCpuTimings,
         lastFrameIntervalMs = lastFrameIntervalMs,
         averageFrameIntervalMs = averageFrameIntervalMs,
         maximumFrameIntervalMs = maximumFrameIntervalMs,
@@ -248,6 +303,9 @@ internal class FsrDemoRenderer(
         allocationFallbackReason = allocationFallbackReason,
         qualityFallbackReason = qualityFallbackReason,
         shaderFallbackReason = shaderFallbackReason,
+        runtimeFallbackReason = runtimeFallbackReason,
+        videoInputPath = videoInputPath,
+        externalEasuAvailable = externalEasuAvailable,
         videoSource = selectedVideoSource?.label ?: "Waiting for output size",
         decodedVideoFrames = decodedVideoFrames,
         videoInputError = videoInputError,
@@ -274,7 +332,12 @@ internal class FsrDemoRenderer(
         presentProgram = 0
         denoiseProgram = 0
         externalCopyProgram = 0
+        externalEasuProgram = 0
+        shaderBindings.clear()
+        externalEasuAvailable = false
+        externalEasuValidationConsumed = false
         inputTexture = 0
+        allocatedSourceSize = PixelSize(0, 0)
         denoisedTexture = 0
         outputTexture = 0
         rcasTexture = 0
@@ -293,6 +356,14 @@ internal class FsrDemoRenderer(
         gpuTimerQueryActive = false
         gpuTimerQueryAvailable = false
         gpuExecutionMs = null
+        easuStageSizes = emptyList()
+        runtimeRenderFallbackPolicy.reset()
+        runtimeEffectiveMode = null
+        runtimeFallbackReason = null
+        lastFallbackSourceFps = null
+        performanceSampleWindowStartNs = 0L
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
         lastModeOnGlThread = null
 
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
@@ -320,7 +391,8 @@ internal class FsrDemoRenderer(
             Log.i(
                 TAG,
                 "shaders=ready renderer=$gpuRenderer version=$glVersion videoCopy=${externalCopyProgram != 0} " +
-                    "easu=${easuProgram != 0} rcas=${rcasProgram != 0} denoise=${denoiseProgram != 0}",
+                    "easu=${easuProgram != 0} easuExternal=$externalEasuAvailable rcas=${rcasProgram != 0} " +
+                    "denoise=${denoiseProgram != 0}",
             )
         }
     }
@@ -342,6 +414,21 @@ internal class FsrDemoRenderer(
                 shaderFallbackReason = "EASU shader unavailable; using bilinear presentation: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, shaderFallbackReason, failure)
             }
+        if (easuProgram != 0) {
+            runCatching {
+                externalEasuProgram = createProgram(
+                    "shaders/fullscreen.vert",
+                    "shaders/fsr_easu.frag",
+                    fragmentDefines = setOf("EASU_EXTERNAL_INPUT"),
+                )
+                externalEasuAvailable = true
+                Log.i(TAG, "easu_external=ready extension=GL_OES_EGL_image_external_essl3")
+            }.onFailure { failure ->
+                externalEasuProgram = 0
+                externalEasuAvailable = false
+                Log.i(TAG, "easu_external=unavailable fallback=rgba-copy reason=${failure.message ?: failure.javaClass.simpleName}")
+            }
+        }
         runCatching { rcasProgram = createProgram("shaders/fullscreen.vert", "shaders/fsr_rcas.frag") }
             .onFailure { failure ->
                 shaderFallbackReason = listOfNotNull(
@@ -417,11 +504,7 @@ internal class FsrDemoRenderer(
                     Log.e(TAG, videoInputError, failure)
                 }
         }
-        easuStageCount = if (renderMode.usesEasu && canUpscaleWithEasu()) {
-            RenderPolicy.easuStages(sourceSize, targetSize).size
-        } else {
-            0
-        }
+        updateEasuStagePlan(renderMode)
         Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} easu_stages=$easuStageCount rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()} video=${source.assetPath}")
     }
 
@@ -470,15 +553,15 @@ internal class FsrDemoRenderer(
                 error = "Could not resize the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, error, failure)
             }
-        easuStageCount = if (renderMode.usesEasu && canUpscaleWithEasu()) {
-            RenderPolicy.easuStages(sourceSize, targetSize).size
-        } else {
-            0
-        }
+        updateEasuStagePlan(renderMode)
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
+        performanceSampleWindowStartNs = System.nanoTime()
         Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize easu_stages=$easuStageCount rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()}")
     }
 
-    private fun recordFrameInterval(frameStartNs: Long) {
+    private fun recordFrameInterval(frameStartNs: Long): Boolean {
+        var intervalWindowCompleted = false
         if (previousFrameStartNs > 0L && frameStartNs > previousFrameStartNs) {
             val intervalNs = frameStartNs - previousFrameStartNs
             lastFrameIntervalMs = intervalNs / 1_000_000.0f
@@ -495,12 +578,32 @@ internal class FsrDemoRenderer(
             frameIntervalWindowTotalNs = 0L
             frameIntervalWindowCount = 0L
             frameIntervalWindowMaxNs = 0L
+            intervalWindowCompleted = true
         }
+        return intervalWindowCompleted
+    }
+
+    private fun resetRendererMeasurementWindows() {
+        previousFrameStartNs = 0L
+        frameIntervalWindowStartNs = 0L
+        frameIntervalWindowTotalNs = 0L
+        frameIntervalWindowCount = 0L
+        frameIntervalWindowMaxNs = 0L
+        lastFrameIntervalMs = null
+        averageFrameIntervalMs = null
+        maximumFrameIntervalMs = null
+        framesInWindow = 0
+        fpsWindowStartNs = System.nanoTime()
+        rendererCallbackFps = 0.0f
     }
 
     private fun applyRequestedMode() {
         val requested = mode
         if (requested == lastModeOnGlThread) return
+        runtimeRenderFallbackPolicy.reset()
+        runtimeEffectiveMode = null
+        runtimeFallbackReason = null
+        lastFallbackSourceFps = sourceVideoFps
         val resourceMode = availableModeFor(requested)
         if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
             val nextTarget = RenderPolicy.targetForGeometry(
@@ -516,11 +619,7 @@ internal class FsrDemoRenderer(
             if (nextTarget.width > 0 && nextTarget.height > 0) {
                 targetSize = nextTarget
                 createOrReplaceTargets()
-                easuStageCount = if (resourceMode.usesEasu && canUpscaleWithEasu()) {
-                    RenderPolicy.easuStages(sourceSize, targetSize).size
-                } else {
-                    0
-                }
+                updateEasuStagePlan(resourceMode)
             }
         }
         if (!requested.usesNoiseReduction) {
@@ -528,6 +627,9 @@ internal class FsrDemoRenderer(
             qualityFallbackReason = null
         }
         lastModeOnGlThread = requested
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
+        performanceSampleWindowStartNs = System.nanoTime()
         Log.i(TAG, "render_resources mode=${requested.id} effective=${effectiveMode.id} rgba_bytes=${snapshot().estimatedRgbaTextureBytes}")
     }
 
@@ -591,8 +693,12 @@ internal class FsrDemoRenderer(
 
     override fun onDrawFrame(unused: GL10?) {
         val frameStartNs = System.nanoTime()
-        recordFrameInterval(frameStartNs)
+        val intervalWindowCompleted = recordFrameInterval(frameStartNs)
         applyRequestedMode()
+        maybeLogPerformanceSample(frameStartNs)
+        if (intervalWindowCompleted && decodedVideoFrames >= minimumFramesForBudgetCheck()) {
+            updateRuntimeFallbackForFrameBudget()
+        }
         if (error != null || presentProgram == 0 || (inputTexture == 0 && externalInputTexture == 0)) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
@@ -602,41 +708,89 @@ internal class FsrDemoRenderer(
         pollGpuTimerQuery()
         val timedGpuFrame = beginGpuTimerQuery()
         try {
-            updateDecodedVideoFrame()
-            val capabilityMode = availableModeFor(mode)
-            val activeMode = when {
-                allocationFallbackReason != null -> RenderMode.BILINEAR
-                mode.usesEasu && !canUpscaleWithEasu() -> RenderMode.BILINEAR
-                capabilityMode.usesNoiseReduction && !ensureDenoiseTarget() -> RenderMode.FSR1
-                else -> capabilityMode
-            }
+            val activeMode = resolveActiveMode()
             effectiveMode = activeMode
+            var directEasuInput = externalEasuAvailable &&
+                activeMode.usesEasu && !activeMode.usesNoiseReduction && externalInputTexture != 0
+            val directPresentationInput = activeMode == RenderMode.BILINEAR &&
+                externalCopyProgram != 0 && externalInputTexture != 0
+            var copyDecodedFrameToRgba = when {
+                activeMode.usesNoiseReduction -> true
+                activeMode.usesEasu -> !directEasuInput
+                else -> !directPresentationInput
+            }
 
-            if (activeMode == RenderMode.BILINEAR) {
-                if (inputTexture != 0 && sourceFramebuffer != 0) presentOriginal() else presentExternalVideoDirect()
+            if (frameAvailable) {
+                measureCpuSubmit(inputUpdateCpuSubmitWindow) {
+                    updateDecodedVideoFrame(copyToRgba = copyDecodedFrameToRgba, directEasuInput = directEasuInput)
+                }
             } else {
-                when (activeMode) {
-                    RenderMode.BILINEAR -> presentOriginal()
-                    RenderMode.EASU_ONLY -> {
-                        drawEasuChain(inputTexture)
-                        presentProcessed(outputTexture)
+                updateDecodedVideoFrame(copyToRgba = copyDecodedFrameToRgba, directEasuInput = directEasuInput)
+            }
+            val hasDecodedFrame = decodedVideoFrames > 0L
+            if (validateExternalEasuOnce && !externalEasuValidationConsumed && hasDecodedFrame) {
+                externalEasuValidationConsumed = true
+                if (!BuildConfig.DEBUG) {
+                    Log.w(TAG, "easu_equivalence=unavailable reason=debug-validation-disabled")
+                } else if (directEasuInput) {
+                    val validation = runCatching { compareExternalEasuWithRgbaCopy() }
+                    val difference = validation.getOrNull()
+                    val passed = difference != null && EasuQualityComparison.isEquivalent(difference)
+                    val validationReason = validation.exceptionOrNull()?.javaClass?.simpleName
+                        ?: if (difference == null) "invalid-output" else if (passed) "within-threshold" else "pixel-difference-over-threshold"
+                    Log.i(
+                        TAG,
+                        "easu_equivalence=${if (passed) "pass" else "fail"} " +
+                            "mae_lsb=${difference?.let { "%.4f".format(it.meanAbsoluteError) } ?: "N/A"} " +
+                            "max_lsb=${difference?.maximumAbsoluteError ?: "N/A"} " +
+                            "psnr_db=${difference?.let { if (it.psnrDb.isInfinite()) "inf" else "%.2f".format(it.psnrDb) } ?: "N/A"} " +
+                            "channels=${difference?.comparedChannels ?: 0} reason=$validationReason",
+                    )
+                    resetCpuSubmitWindows()
+                    performanceSampleWindowStartNs = System.nanoTime()
+                    if (!passed) {
+                        externalEasuAvailable = false
+                        directEasuInput = false
+                        copyDecodedFrameToRgba = true
+                        videoInputPath = "rgba-copy-after-equivalence-failure"
+                        runCatching { copyExternalVideoToRgba() }
+                            .onFailure { failure -> Log.e(TAG, "Fallback OES→RGBA copy failed", failure) }
+                        Log.w(TAG, "easu_external=disabled fallback=rgba-copy after output comparison")
                     }
-                    RenderMode.FSR1, RenderMode.FSR1_DENOISE -> {
-                        val easuInput = if (activeMode.usesNoiseReduction) {
-                            drawDenoise()
-                            denoisedTexture
-                        } else {
-                            inputTexture
-                        }
-                        drawEasuChain(easuInput)
-                        if (rcasTexture == 0) {
-                            drawRcasToSurface()
-                        } else {
+                } else {
+                    Log.i(TAG, "easu_equivalence=unavailable reason=external-path-not-active")
+                }
+            }
+
+            when (activeMode) {
+                RenderMode.BILINEAR -> measureCpuSubmit(presentCpuSubmitWindow) {
+                    if (hasDecodedFrame && directPresentationInput) presentExternalVideoDirect() else presentOriginal()
+                }
+                RenderMode.EASU_ONLY -> {
+                    measureCpuSubmit(easuCpuSubmitWindow) {
+                        drawEasuChain(inputTexture, useExternalInput = directEasuInput && hasDecodedFrame)
+                    }
+                    measureCpuSubmit(presentCpuSubmitWindow) { presentProcessed(outputTexture) }
+                }
+                RenderMode.FSR1, RenderMode.FSR1_DENOISE -> {
+                    val easuInput = if (activeMode.usesNoiseReduction) {
+                        measureCpuSubmit(denoiseCpuSubmitWindow) { drawDenoise() }
+                        denoisedTexture
+                    } else {
+                        inputTexture
+                    }
+                    measureCpuSubmit(easuCpuSubmitWindow) {
+                        drawEasuChain(easuInput, useExternalInput = directEasuInput && hasDecodedFrame)
+                    }
+                    if (rcasTexture == 0) {
+                        measureCpuSubmit(rcasCpuSubmitWindow) { drawRcasToSurface() }
+                    } else {
+                        measureCpuSubmit(rcasCpuSubmitWindow) {
                             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, rcasFramebuffer)
                             GLES30.glViewport(0, 0, targetSize.width, targetSize.height)
                             drawRcas()
-                            presentProcessed(rcasTexture)
                         }
+                        measureCpuSubmit(presentCpuSubmitWindow) { presentProcessed(rcasTexture) }
                     }
                 }
             }
@@ -647,7 +801,13 @@ internal class FsrDemoRenderer(
         framesInWindow += 1
         renderedFrames += 1L
         val now = System.nanoTime()
-        cpuGlSubmitMs = (now - frameStartNs) / 1_000_000.0f
+        val submitDurationNs = now - frameStartNs
+        cpuGlSubmitMs = submitDurationNs / 1_000_000.0f
+        if (skipNextFrameCpuSubmitSample) {
+            skipNextFrameCpuSubmitSample = false
+        } else {
+            frameCpuSubmitWindow.record(submitDurationNs)
+        }
         if (fpsWindowStartNs == 0L) fpsWindowStartNs = now
         val elapsed = now - fpsWindowStartNs
         if (elapsed >= 1_000_000_000L) {
@@ -660,6 +820,110 @@ internal class FsrDemoRenderer(
             }
         }
     }
+
+    private fun resolveActiveMode(): RenderMode {
+        if (allocationFallbackReason != null) return RenderMode.BILINEAR
+        if (mode.usesEasu && !canUpscaleWithEasu()) return RenderMode.BILINEAR
+        val capabilityMode = availableModeFor(mode)
+        if (capabilityMode.usesNoiseReduction && !ensureDenoiseTarget()) return RenderMode.FSR1
+        return runtimeEffectiveMode ?: capabilityMode
+    }
+
+    private fun minimumFramesForBudgetCheck(): Long =
+        maxOf(5L, ((sourceVideoFps ?: 0f) * 0.5f).toLong())
+
+    private fun updateRuntimeFallbackForFrameBudget() {
+        val sourceFps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
+        if (sourceFps != lastFallbackSourceFps) {
+            runtimeRenderFallbackPolicy.reset()
+            runtimeEffectiveMode = null
+            runtimeFallbackReason = null
+            lastFallbackSourceFps = sourceFps
+            resetCpuSubmitWindows()
+            resetRendererMeasurementWindows()
+            performanceSampleWindowStartNs = System.nanoTime()
+            return
+        }
+        val knownSourceFps = sourceFps ?: return
+        val measuredRendererIntervalMs = averageFrameIntervalMs
+        val current = runtimeEffectiveMode ?: resolveActiveMode()
+        val next = runtimeRenderFallbackPolicy.observe(current, knownSourceFps, measuredRendererIntervalMs) ?: return
+        if (next == current) return
+        runtimeEffectiveMode = next
+        runtimeFallbackReason =
+            "Sustained renderer callback intervals exceeded the known ${"%.2f".format(knownSourceFps)} fps source budget; " +
+                "using ${next.label} instead of ${current.label}. This is not display FPS."
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
+        performanceSampleWindowStartNs = System.nanoTime()
+        Log.w(
+            TAG,
+            "render_auto_fallback requested=${mode.id} from=${current.id} to=${next.id} " +
+                "source_fps=$knownSourceFps avg_renderer_interval_ms=$measuredRendererIntervalMs",
+        )
+    }
+
+    private inline fun measureCpuSubmit(window: CpuSubmitWindow, action: () -> Unit) {
+        val startNs = System.nanoTime()
+        try {
+            action()
+        } finally {
+            window.record(System.nanoTime() - startNs)
+        }
+    }
+
+    private fun resetCpuSubmitWindows() {
+        frameCpuSubmitWindow.drain()
+        inputUpdateCpuSubmitWindow.drain()
+        denoiseCpuSubmitWindow.drain()
+        easuCpuSubmitWindow.drain()
+        rcasCpuSubmitWindow.drain()
+        presentCpuSubmitWindow.drain()
+        latestCpuTimings = RenderCpuTimings(null, null, null, null, null, null)
+        skipNextFrameCpuSubmitSample = true
+    }
+
+    private fun maybeLogPerformanceSample(nowNs: Long) {
+        if (performanceSampleWindowStartNs == 0L) {
+            performanceSampleWindowStartNs = nowNs
+            return
+        }
+        if (nowNs - performanceSampleWindowStartNs < PERFORMANCE_SAMPLE_INTERVAL_NS) return
+
+        val timings = RenderCpuTimings(
+            frameSubmit = frameCpuSubmitWindow.drain(),
+            inputUpdate = inputUpdateCpuSubmitWindow.drain(),
+            denoise = denoiseCpuSubmitWindow.drain(),
+            easu = easuCpuSubmitWindow.drain(),
+            rcas = rcasCpuSubmitWindow.drain(),
+            present = presentCpuSubmitWindow.drain(),
+        )
+        latestCpuTimings = timings
+        performanceSampleWindowStartNs = nowNs
+
+        fun CpuSubmitSummary?.field(): String = this?.let {
+            "${"%.3f".format(it.averageMs)}/${"%.3f".format(it.maximumMs)}/${it.samples}"
+        } ?: "N/A"
+        Log.i(
+            TAG,
+            "performance_sample requested=${mode.id} effective=${effectiveMode.id} " +
+                "source_fps=${sourceVideoFps?.let { "%.2f".format(it) } ?: "unknown"} " +
+                "surface_callback_fps=${surfaceTextureCallbackFps?.let { "%.2f".format(it) } ?: "N/A"} " +
+                "renderer_callback_fps=${"%.2f".format(rendererCallbackFps)} " +
+                "renderer_callback_interval_avg_ms=${averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "N/A"} " +
+                "renderer_callback_interval_max_ms=${maximumFrameIntervalMs?.let { "%.2f".format(it) } ?: "N/A"} " +
+                "cpu_gl_submit_avg_ms=${timings.frameSubmit.field()} " +
+                "cpu_input_update_avg_ms=${timings.inputUpdate.field()} " +
+                "cpu_denoise_submit_avg_ms=${timings.denoise.field()} " +
+                "cpu_easu_submit_avg_ms=${timings.easu.field()} " +
+                "cpu_rcas_submit_avg_ms=${timings.rcas.field()} " +
+                "cpu_present_submit_avg_ms=${timings.present.field()} " +
+                "video_input_path=$videoInputPath gpu_timer_query=$gpuTimerQueryAvailable " +
+                "gpu_execution_ms=${gpuExecutionMs?.let { "%.3f".format(it) } ?: "N/A"} " +
+                "runtime_fallback_active=${runtimeFallbackReason != null}",
+        )
+    }
+
 
     private fun presentOriginal() = presentFitted(inputTexture, flipY = decodedVideoFrames == 0L)
 
@@ -675,32 +939,27 @@ internal class FsrDemoRenderer(
     }
 
     private fun drawExternalTexture() {
-        GLES30.glUseProgram(externalCopyProgram)
-        bindQuad(externalCopyProgram)
+        val program = externalCopyProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalInputTexture)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(externalCopyProgram, "uInput"), 0)
-        GLES30.glUniformMatrix4fv(
-            GLES30.glGetUniformLocation(externalCopyProgram, "uTextureTransform"),
-            1,
-            false,
-            textureTransform,
-            0,
-        )
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniformMatrix4fv(bindings.textureTransform, 1, false, textureTransform, 0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     private fun drawDenoise() {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, denoiseFramebuffer)
         GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
-        GLES30.glUseProgram(denoiseProgram)
-        bindQuad(denoiseProgram)
+        val program = denoiseProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
         bindTexture(inputTexture)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(denoiseProgram, "uInput"), 0)
-        GLES30.glUniform1f(
-            GLES30.glGetUniformLocation(denoiseProgram, "uStrength"),
-            FilterPolicy.DEFAULT_DENOISE_STRENGTH,
-        )
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniform1f(bindings.strength, FilterPolicy.DEFAULT_DENOISE_STRENGTH)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
@@ -737,12 +996,13 @@ internal class FsrDemoRenderer(
         drawPresent(texture, flipY)
     }
 
-    private fun drawEasuChain(firstInputTexture: Int) {
-        val stages = RenderPolicy.easuStages(sourceSize, targetSize)
+    private fun drawEasuChain(firstInputTexture: Int, useExternalInput: Boolean = false) {
+        val stages = easuStageSizes
         check(stages.isNotEmpty()) { "No valid EASU stage for $sourceSize → $targetSize" }
         var inputTextureForStage = firstInputTexture
         var inputSize = sourceSize
-        stages.forEachIndexed { index, stageSize ->
+        for (index in stages.indices) {
+            val stageSize = stages[index]
             val finalStage = index == stages.lastIndex
             val (destinationTexture, destinationFramebuffer) = when {
                 finalStage -> outputTexture to framebuffer
@@ -751,7 +1011,16 @@ internal class FsrDemoRenderer(
             }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, destinationFramebuffer)
             GLES30.glViewport(0, 0, stageSize.width, stageSize.height)
-            drawEasu(inputTextureForStage, inputSize, stageSize, flipInputY = index == 0 && decodedVideoFrames == 0L)
+            if (index == 0 && useExternalInput) {
+                drawEasuExternal(inputSize, stageSize)
+            } else {
+                drawEasu(
+                    inputTextureForStage,
+                    inputSize,
+                    stageSize,
+                    flipInputY = index == 0 && decodedVideoFrames == 0L,
+                )
+            }
             inputTextureForStage = destinationTexture
             inputSize = stageSize
         }
@@ -763,62 +1032,68 @@ internal class FsrDemoRenderer(
         outputSize: PixelSize,
         flipInputY: Boolean,
     ) {
-        GLES30.glUseProgram(easuProgram)
-        bindQuad(easuProgram)
+        val program = easuProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
         bindTexture(sourceTexture)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(easuProgram, "uInput"), 0)
-        GLES30.glUniform2f(
-            GLES30.glGetUniformLocation(easuProgram, "uInputSize"),
-            inputSize.width.toFloat(),
-            inputSize.height.toFloat(),
-        )
-        GLES30.glUniform2f(
-            GLES30.glGetUniformLocation(easuProgram, "uOutputSize"),
-            outputSize.width.toFloat(),
-            outputSize.height.toFloat(),
-        )
-        GLES30.glUniform1i(
-            GLES30.glGetUniformLocation(easuProgram, "uFlipInputY"),
-            if (flipInputY) 1 else 0,
-        )
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniform2f(bindings.inputSize, inputSize.width.toFloat(), inputSize.height.toFloat())
+        GLES30.glUniform2f(bindings.outputSize, outputSize.width.toFloat(), outputSize.height.toFloat())
+        GLES30.glUniform1i(bindings.flipInputY, if (flipInputY) 1 else 0)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    private fun drawEasuExternal(inputSize: PixelSize, outputSize: PixelSize) {
+        val program = externalEasuProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalInputTexture)
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniform2f(bindings.inputSize, inputSize.width.toFloat(), inputSize.height.toFloat())
+        GLES30.glUniform2f(bindings.outputSize, outputSize.width.toFloat(), outputSize.height.toFloat())
+        GLES30.glUniform1i(bindings.flipInputY, 0)
+        GLES30.glUniformMatrix4fv(bindings.textureTransform, 1, false, textureTransform, 0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     private fun drawRcas(viewportOriginX: Int = 0, viewportOriginY: Int = 0) {
-        GLES30.glUseProgram(rcasProgram)
-        bindQuad(rcasProgram)
+        val program = rcasProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
         bindTexture(outputTexture)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(rcasProgram, "uInput"), 0)
-        GLES30.glUniform1f(
-            GLES30.glGetUniformLocation(rcasProgram, "uSharpnessScale"),
-            RenderPolicy.rcasScaleFor(sharpnessProgress),
-        )
-        GLES30.glUniform2f(
-            GLES30.glGetUniformLocation(rcasProgram, "uViewportOrigin"),
-            viewportOriginX.toFloat(),
-            viewportOriginY.toFloat(),
-        )
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniform1f(bindings.sharpnessScale, RenderPolicy.rcasScaleFor(sharpnessProgress))
+        GLES30.glUniform2f(bindings.viewportOrigin, viewportOriginX.toFloat(), viewportOriginY.toFloat())
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     private fun drawPresent(texture: Int, flipY: Boolean) {
-        GLES30.glUseProgram(presentProgram)
-        bindQuad(presentProgram)
+        val program = presentProgram
+        val bindings = bindingsFor(program)
+        GLES30.glUseProgram(program)
+        bindQuad(program)
         bindTexture(texture)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(presentProgram, "uInput"), 0)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(presentProgram, "uFlipY"), if (flipY) 1 else 0)
+        GLES30.glUniform1i(bindings.input, 0)
+        GLES30.glUniform1i(bindings.flipY, if (flipY) 1 else 0)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     private fun bindQuad(program: Int) {
+        val bindings = bindingsFor(program)
         quad.position(0)
-        val position = GLES30.glGetAttribLocation(program, "aPosition")
-        val texCoord = GLES30.glGetAttribLocation(program, "aTexCoord")
-        GLES30.glEnableVertexAttribArray(position)
-        GLES30.glEnableVertexAttribArray(texCoord)
-        GLES30.glVertexAttribPointer(position, 2, GLES30.GL_FLOAT, false, 16, quad)
-        quad.position(2)
-        GLES30.glVertexAttribPointer(texCoord, 2, GLES30.GL_FLOAT, false, 16, quad)
+        if (bindings.position >= 0) {
+            GLES30.glEnableVertexAttribArray(bindings.position)
+            GLES30.glVertexAttribPointer(bindings.position, 2, GLES30.GL_FLOAT, false, 16, quad)
+        }
+        if (bindings.texCoord >= 0) {
+            quad.position(2)
+            GLES30.glEnableVertexAttribArray(bindings.texCoord)
+            GLES30.glVertexAttribPointer(bindings.texCoord, 2, GLES30.GL_FLOAT, false, 16, quad)
+        }
         quad.position(0)
     }
 
@@ -828,13 +1103,17 @@ internal class FsrDemoRenderer(
     }
 
     private fun createOrReplaceTargets() {
-        releaseRenderTargets()
+        releaseProcessingTargets()
         allocationFallbackReason = null
         qualityFallbackReason = null
 
         try {
-            inputTexture = createChartTexture(sourceSize)
-            sourceFramebuffer = createFramebuffer(inputTexture)
+            if (inputTexture == 0 || sourceFramebuffer == 0 || allocatedSourceSize != sourceSize) {
+                releaseSourceTarget()
+                inputTexture = createChartTexture(sourceSize)
+                sourceFramebuffer = createFramebuffer(inputTexture)
+                allocatedSourceSize = sourceSize
+            }
 
             val canUpscale = canUpscaleWithEasu()
             val renderMode = availableModeFor(mode)
@@ -876,10 +1155,20 @@ internal class FsrDemoRenderer(
 
     private fun fallbackAfterTargetAllocationFailure(failure: Throwable) {
         releaseProcessingTargets()
+        if (sourceFramebuffer == 0) releaseSourceTarget()
         allocationFallbackReason = "GPU render-target allocation failed; using bilinear input: ${failure.message ?: failure.javaClass.simpleName}"
         effectiveMode = RenderMode.BILINEAR
         lastModeOnGlThread = mode
         Log.e(TAG, allocationFallbackReason, failure)
+    }
+
+    private fun updateEasuStagePlan(renderMode: RenderMode) {
+        easuStageSizes = if (renderMode.usesEasu && canUpscaleWithEasu()) {
+            RenderPolicy.easuStages(sourceSize, targetSize)
+        } else {
+            emptyList()
+        }
+        easuStageCount = easuStageSizes.size
     }
 
     private fun canUpscaleWithEasu(): Boolean =
@@ -970,12 +1259,12 @@ internal class FsrDemoRenderer(
         easuIntermediateTextureB = 0
     }
 
-    private fun releaseRenderTargets() {
-        releaseProcessingTargets()
+    private fun releaseSourceTarget() {
         if (sourceFramebuffer != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(sourceFramebuffer), 0)
         if (inputTexture != 0) GLES30.glDeleteTextures(1, intArrayOf(inputTexture), 0)
         sourceFramebuffer = 0
         inputTexture = 0
+        allocatedSourceSize = PixelSize(0, 0)
     }
 
     private fun createExternalVideoSurface(source: VideoTestSource) {
@@ -1024,14 +1313,49 @@ internal class FsrDemoRenderer(
         onVideoSurfaceAvailable(surfaceTexture, source)
     }
 
-    private fun updateDecodedVideoFrame() {
-        if (!frameAvailable) return
-        val surfaceTexture = decodedSurfaceTexture ?: return
+    private fun compareExternalEasuWithRgbaCopy(): EasuOutputDifference? {
+        check(BuildConfig.DEBUG) { "Pixel comparison is restricted to debug builds" }
+        check(externalEasuAvailable && externalInputTexture != 0) { "External EASU input is unavailable" }
+        check(sourceFramebuffer != 0 && inputTexture != 0 && framebuffer != 0) {
+            "EASU comparison render targets are unavailable"
+        }
+        drawEasuChain(inputTexture, useExternalInput = true)
+        val directOutput = readEasuOutputPixels()
+        copyExternalVideoToRgba()
+        drawEasuChain(inputTexture, useExternalInput = false)
+        val rgbaCopyOutput = readEasuOutputPixels()
+        return EasuQualityComparison.compare(rgbaCopyOutput, directOutput)
+    }
+
+    private fun readEasuOutputPixels(): ByteArray {
+        val byteCount = targetSize.width * targetSize.height * 4
+        val pixels = ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder())
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
+        GLES30.glReadPixels(0, 0, targetSize.width, targetSize.height, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, pixels)
+        checkNoGlError("debug EASU output comparison readback")
+        val output = ByteArray(byteCount)
+        pixels.position(0)
+        pixels.get(output)
+        return output
+    }
+
+    private fun copyExternalVideoToRgba() {
+        check(externalInputTexture != 0 && sourceFramebuffer != 0 && inputTexture != 0) {
+            "External-video RGBA copy target is unavailable"
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sourceFramebuffer)
+        GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
+        drawExternalTexture()
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun updateDecodedVideoFrame(copyToRgba: Boolean, directEasuInput: Boolean): Boolean {
+        if (!frameAvailable) return false
+        val surfaceTexture = decodedSurfaceTexture ?: return false
         frameAvailable = false
         val callbacks = pendingVideoFrameCallbacks.getAndSet(0L)
-        if (callbacks <= 0L) return
+        if (callbacks <= 0L) return false
         if (callbacks > 1L) estimatedSkippedFrames += callbacks - 1L
-        if (externalCopyProgram == 0) return
         try {
             surfaceTexture.updateTexImage()
             surfaceTexture.getTransformMatrix(textureTransform)
@@ -1056,22 +1380,25 @@ internal class FsrDemoRenderer(
             if (timestampNs > 0L) {
                 mediaTimestampCadence.record(timestampNs)?.let { consumedMediaTimestampFps = it }
             }
-            val canCopyToRgba = sourceFramebuffer != 0 && inputTexture != 0
-            if (canCopyToRgba) {
-                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, sourceFramebuffer)
-                GLES30.glViewport(0, 0, sourceSize.width, sourceSize.height)
-                drawExternalTexture()
+            val copiedToRgba = copyToRgba && externalCopyProgram != 0 && sourceFramebuffer != 0 && inputTexture != 0
+            if (copiedToRgba) copyExternalVideoToRgba()
+            videoInputPath = when {
+                copiedToRgba -> "rgba-copy"
+                directEasuInput -> "direct-easu-oes"
+                externalInputTexture != 0 -> "direct-oes"
+                else -> "no-external-texture"
             }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             decodedVideoFrames += 1L
             if (decodedVideoFrames == 1L || decodedVideoFrames % 60L == 0L) {
-                val path = if (canCopyToRgba) "uploaded" else "direct-fallback"
-                Log.i(TAG, "video_frame=$path count=$decodedVideoFrames source=${sourceSize}")
+                Log.i(TAG, "video_frame=consumed path=$videoInputPath count=$decodedVideoFrames source=$sourceSize")
             }
+            return true
         } catch (failure: Exception) {
-            videoInputError = "Decoded video frame upload failed: ${failure.message ?: failure.javaClass.simpleName}"
+            videoInputError = "Decoded video frame update failed: ${failure.message ?: failure.javaClass.simpleName}"
             Log.e(TAG, videoInputError, failure)
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+            return false
         }
     }
 
@@ -1164,9 +1491,24 @@ internal class FsrDemoRenderer(
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
     }
 
-    private fun createProgram(vertexAsset: String, fragmentAsset: String): Int {
+    private fun createProgram(
+        vertexAsset: String,
+        fragmentAsset: String,
+        fragmentDefines: Set<String> = emptySet(),
+    ): Int {
         val vertexSource = context.assets.open(vertexAsset).bufferedReader().use { it.readText() }
-        val fragmentSource = context.assets.open(fragmentAsset).bufferedReader().use { it.readText() }
+        val rawFragmentSource = context.assets.open(fragmentAsset).bufferedReader().use { it.readText() }
+        val fragmentSource = if (fragmentDefines.isEmpty()) {
+            rawFragmentSource
+        } else {
+            val versionLineEnd = rawFragmentSource.indexOf('\n')
+            check(versionLineEnd >= 0 && rawFragmentSource.substring(0, versionLineEnd).startsWith("#version")) {
+                "$fragmentAsset must begin with a #version directive before shader defines"
+            }
+            rawFragmentSource.substring(0, versionLineEnd + 1) +
+                fragmentDefines.joinToString("\n") { "#define $it 1" } + "\n" +
+                rawFragmentSource.substring(versionLineEnd + 1)
+        }
         var vertex = 0
         var fragment = 0
         var program = 0
@@ -1183,6 +1525,7 @@ internal class FsrDemoRenderer(
             check(link[0] == GLES30.GL_TRUE) {
                 "Program link failed: ${GLES30.glGetProgramInfoLog(program)}"
             }
+            cacheShaderBindings(program, fragmentAsset)
             return program
         } catch (failure: Throwable) {
             if (program != 0) GLES30.glDeleteProgram(program)
@@ -1192,6 +1535,30 @@ internal class FsrDemoRenderer(
             if (fragment != 0) GLES30.glDeleteShader(fragment)
         }
     }
+
+    private fun cacheShaderBindings(program: Int, fragmentAsset: String) {
+        val bindings = ShaderBindings(
+            position = GLES30.glGetAttribLocation(program, "aPosition"),
+            texCoord = GLES30.glGetAttribLocation(program, "aTexCoord"),
+            input = GLES30.glGetUniformLocation(program, "uInput"),
+            inputSize = GLES30.glGetUniformLocation(program, "uInputSize"),
+            outputSize = GLES30.glGetUniformLocation(program, "uOutputSize"),
+            flipInputY = GLES30.glGetUniformLocation(program, "uFlipInputY"),
+            sharpnessScale = GLES30.glGetUniformLocation(program, "uSharpnessScale"),
+            viewportOrigin = GLES30.glGetUniformLocation(program, "uViewportOrigin"),
+            strength = GLES30.glGetUniformLocation(program, "uStrength"),
+            flipY = GLES30.glGetUniformLocation(program, "uFlipY"),
+            textureTransform = GLES30.glGetUniformLocation(program, "uTextureTransform"),
+        )
+        check(bindings.position >= 0) {
+            "$fragmentAsset did not keep the fullscreen position attribute active"
+        }
+        shaderBindings[program] = bindings
+    }
+
+    private fun bindingsFor(program: Int): ShaderBindings =
+        checkNotNull(shaderBindings[program]) { "No cached GLES bindings for program $program" }
+
 
     private fun compileShader(type: Int, source: String, name: String): Int {
         val shader = GLES30.glCreateShader(type)

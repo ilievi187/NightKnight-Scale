@@ -101,6 +101,9 @@ class MainActivity : Activity() {
         renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
             mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
         }
+        renderer.validateExternalEasuOnce =
+            BuildConfig.DEBUG && intent.getBooleanExtra("nkscale_validate_easu_input", false)
+        if (renderer.validateExternalEasuOnce) Log.i(TAG, "easu_equivalence=scheduled debug_only=true")
         renderer.mode = selectedPreset.renderMode
         renderer.aspectMode = selectedAspectMode
         renderer.sharpnessProgress = preferences.getInt("sharpness_progress", selectedPreset.defaultSharpness)
@@ -727,6 +730,7 @@ class MainActivity : Activity() {
             state.allocationFallbackReason != null -> "${selectedPreset.label} · ${state.allocationFallbackReason}"
             state.qualityFallbackReason != null -> "${selectedPreset.label} · ${state.qualityFallbackReason}"
             state.shaderFallbackReason != null -> "${selectedPreset.label} · ${state.shaderFallbackReason}"
+            state.runtimeFallbackReason != null -> "${selectedPreset.label} · ${state.runtimeFallbackReason}"
             state.effectiveMode != state.mode -> "${selectedPreset.label} requested · using ${state.effectiveMode.label}"
             else -> "${selectedPreset.label} · ${state.mode.summary}"
         }
@@ -778,6 +782,8 @@ class MainActivity : Activity() {
             state.allocationFallbackReason?.let { appendLine("GPU fallback: $it") }
             state.qualityFallbackReason?.let { appendLine("Quality fallback: $it") }
             state.shaderFallbackReason?.let { appendLine("Shader fallback: $it") }
+            state.runtimeFallbackReason?.let { appendLine("Runtime fallback: $it") }
+            appendLine("Video input route: ${state.videoInputPath} · direct OES EASU ${if (state.externalEasuAvailable) "available" else "RGBA-copy fallback"}")
             val rcasPath = when {
                 !state.effectiveMode.usesRcas -> "disabled"
                 state.geometry.codedWidth > 0 &&
@@ -809,7 +815,12 @@ class MainActivity : Activity() {
             appendLine("Consumed SurfaceTexture timestamp cadence: ${state.consumedMediaTimestampFps?.let { "%.2f".format(it) } ?: "—"} fps")
             appendLine("Renderer callback cadence: ${"%.2f".format(state.rendererCallbackFps)} fps (not display FPS)")
             appendLine("Frame interval ms: last=${state.lastFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, avg=${state.averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, max=${state.maximumFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}")
-            appendLine("CPU GL-submit time: ${state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            appendLine("CPU GL-submit last onDrawFrame body: ${state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms (CPU wall time, not GPU execution; driver calls may stall; excludes EGL swap)")
+            fun cpuWindow(summary: CpuSubmitSummary?): String = summary?.let {
+                "${"%.3f".format(it.averageMs)}/${"%.3f".format(it.maximumMs)} ms, n=${it.samples}"
+            } ?: "—"
+            appendLine("CPU submit windows avg/max: frame=${cpuWindow(state.cpuTimings.frameSubmit)} · input=${cpuWindow(state.cpuTimings.inputUpdate)}")
+            appendLine("CPU pass submit avg/max: NR=${cpuWindow(state.cpuTimings.denoise)} · EASU=${cpuWindow(state.cpuTimings.easu)} · RCAS=${cpuWindow(state.cpuTimings.rcas)} · present=${cpuWindow(state.cpuTimings.present)}")
             val gpuText = when {
                 !state.gpuTimerQueryAvailable -> "N/A (GL_EXT_disjoint_timer_query unsupported)"
                 state.gpuExecutionMs == null -> "waiting for asynchronous timer sample"
