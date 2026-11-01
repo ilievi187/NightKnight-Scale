@@ -133,6 +133,9 @@ select_and_verify() {
     wait_for_app_log "video=decoded-size ${expected_size} input=local video"
     wait_for_app_log "video=playing source=local-video"
     wait_for_app_log "easu_stages=$expected_stages"
+    if [ "$expected_size" = "768x576" ]; then
+        wait_for_app_log "rcas_output=direct"
+    fi
     # Confirm motion through the processed renderer, rather than only a prepare callback.
     sleep 2
     adb exec-out screencap -p > "$output_dir/${filename%.mp4}-a.png"

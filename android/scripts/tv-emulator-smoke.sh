@@ -61,9 +61,8 @@ wait_for_log_occurrences() {
 wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
 wait_for_log_marker 'video=playing' 'MediaPlayer prepare/start'
 wait_for_log_marker 'video_frame=uploaded' 'decoded SurfaceTexture frame upload'
-wait_for_log_marker 'render_fps=' 'render callback FPS'
-# Keep the initial FSR1 path running until the sparse 120-callback glFinish sample.
-wait_for_log_marker 'render_completion_ms=' 'sparse submit-to-GL-finish sample'
+wait_for_log_marker 'render_fps=' 'renderer callback FPS'
+wait_for_log_marker 'gpu_timer_query=' 'GPU timer-query capability detection'
 
 # Two moving decoded captures prove the packaged video is updating the GLES input.
 adb exec-out screencap -p > "$output_dir/video-motion-a.png"
@@ -136,7 +135,10 @@ adb shell uiautomator dump /sdcard/nkscale-diagnostics.xml >/dev/null 2>&1
 adb pull /sdcard/nkscale-diagnostics.xml "$output_dir/diagnostics-dialog.xml" >/dev/null 2>&1
 if ! grep -Fq 'NightKnight · Diagnostics' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'EASU pass count' "$output_dir/diagnostics-dialog.xml" || \
-   ! grep -Fq 'RGBA render-target estimate' "$output_dir/diagnostics-dialog.xml"; then
+   ! grep -Fq 'RGBA render-target estimate' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'GPU execution time' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'Display presentation timing' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'SurfaceTexture callback cadence' "$output_dir/diagnostics-dialog.xml"; then
     echo "D-pad diagnostics dialog did not expose its title and renderer metrics" >&2
     cat "$output_dir/diagnostics-dialog.xml" >&2
     exit 1
@@ -154,7 +156,7 @@ adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/preset-and-settings
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
 adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt"
 
-for marker in 'shaders=ready' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'render_completion_ms=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9'; do
+for marker in 'shaders=ready' 'gpu_timer_query=' 'video=playing' 'video_frame=uploaded' 'video=paused' 'surface=' 'render_fps=' 'mode=fsr1' 'mode=fsr1_denoise' 'mode=easu_only' 'mode=bilinear' 'sharpness=9' 'settings=loaded preset=balanced sharpness=9'; do
     if ! grep -Fq "$marker" "$output_dir/preset-and-settings-logcat.txt"; then
         echo "Expected preset/settings emulator marker was not observed: $marker" >&2
         cat "$output_dir/preset-and-settings-logcat.txt" >&2

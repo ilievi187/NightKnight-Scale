@@ -156,4 +156,56 @@ class RenderPolicyTest {
             RenderPolicy.estimatedRgbaTextureBytes(source, target, surface, includeNoiseReduction = false),
         )
     }
+
+    @Test
+    fun memoryEstimateIncludesOnlyResourcesRequiredByEachPreset() {
+        val source = PixelSize(640, 480)
+        val target = PixelSize(1280, 960)
+        val surface = PixelSize(1920, 1080)
+        assertEquals(
+            1_228_800L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source,
+                target,
+                surface,
+                includeNoiseReduction = false,
+                includeEasu = false,
+                includeRcas = false,
+            ),
+        )
+        assertEquals(
+            6_144_000L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source,
+                target,
+                surface,
+                includeNoiseReduction = false,
+                includeEasu = true,
+                includeRcas = false,
+            ),
+        )
+        assertEquals(
+            11_059_200L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source,
+                target,
+                surface,
+                includeNoiseReduction = false,
+                includeEasu = true,
+                includeRcas = true,
+            ),
+        )
+        assertEquals(
+            0L,
+            RenderPolicy.estimatedRgbaTextureBytes(
+                source,
+                target,
+                surface,
+                includeNoiseReduction = false,
+                includeEasu = false,
+                includeRcas = false,
+                includeSourceTexture = false,
+            ),
+        )
+    }
 }
