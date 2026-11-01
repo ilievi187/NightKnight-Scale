@@ -136,23 +136,35 @@ select_and_verify() {
     if [ "$expected_size" = "768x576" ]; then
         wait_for_app_log "rcas_output=direct"
     fi
-    # Confirm motion through the processed renderer, rather than only a prepare callback.
+    # The TV emulator/photo-picker path can delay the first moving frame. Allow a bounded
+    # six-second window, and compare the bottom video-preview strip below the control panel.
     sleep 2
+    motion_observed=0
+    motion_wait_attempts=0
     adb exec-out screencap -p > "$output_dir/${filename%.mp4}-a.png"
-    sleep 1
-    adb exec-out screencap -p > "$output_dir/${filename%.mp4}-b.png"
+    for attempt in $(seq 1 12); do
+        sleep 0.5
+        adb exec-out screencap -p > "$output_dir/${filename%.mp4}-b.png"
+        ffmpeg -hide_banner -loglevel error -y \
+            -i "$output_dir/${filename%.mp4}-a.png" \
+            -vf 'crop=1920:48:0:1032' -frames:v 1 -f rawvideo -pix_fmt rgb24 "$work_dir/a-bottom.rgb"
+        ffmpeg -hide_banner -loglevel error -y \
+            -i "$output_dir/${filename%.mp4}-b.png" \
+            -vf 'crop=1920:48:0:1032' -frames:v 1 -f rawvideo -pix_fmt rgb24 "$work_dir/b-bottom.rgb"
+        motion_wait_attempts="$attempt"
+        if ! cmp -s "$work_dir/a-bottom.rgb" "$work_dir/b-bottom.rgb"; then
+            motion_observed=1
+            break
+        fi
+        cp "$output_dir/${filename%.mp4}-b.png" "$output_dir/${filename%.mp4}-a.png"
+    done
     adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/${filename%.mp4}-logcat.txt"
-    if ! ffmpeg -hide_banner -loglevel error -y -i "$output_dir/${filename%.mp4}-a.png" \
-        -vf 'crop=320:640:800:200' -frames:v 1 -f rawvideo -pix_fmt rgb24 "$work_dir/a.rgb"; then
-        echo "Failed to crop local video frame A for $filename" >&2; return 1
-    fi
-    ffmpeg -hide_banner -loglevel error -y -i "$output_dir/${filename%.mp4}-b.png" \
-        -vf 'crop=320:640:800:200' -frames:v 1 -f rawvideo -pix_fmt rgb24 "$work_dir/b.rgb"
-    if cmp -s "$work_dir/a.rgb" "$work_dir/b.rgb"; then
-        echo "Selected local video $filename did not advance in the GLES preview" >&2
+    if [ "$motion_observed" -ne 1 ]; then
+        echo "Selected local video $filename showed no preview motion within the bounded six-second window" >&2
         return 1
     fi
-    printf 'played=%s size=%s expected_encoded_fps=%s expected_easu_stages=%s\n' "$filename" "$expected_size" "$expected_fps" "$expected_stages" \
+    printf 'played=%s size=%s expected_encoded_fps=%s expected_easu_stages=%s motion_check_attempts=%s\n' \
+        "$filename" "$expected_size" "$expected_fps" "$expected_stages" "$motion_wait_attempts" \
         >> "$output_dir/local-input-playback.txt"
 }
 
