@@ -287,6 +287,13 @@ for benchmark_mode in fsr1_denoise fsr1 easu_only bilinear; do
     fi
     printf '%s\n' "$active_samples" >> "$output_dir/performance-samples-active.logcat.txt"
 done
+quality_stage_samples="$(grep -F 'performance_sample requested=fsr1_denoise effective=fsr1_denoise ' "$output_dir/performance-samples-active.logcat.txt" | grep -Fv 'cpu_denoise_submit_avg_ms=N/A' | grep -Fv 'cpu_easu_submit_avg_ms=N/A' | grep -Fv 'cpu_rcas_submit_avg_ms=N/A' || true)"
+if [ -z "$quality_stage_samples" ]; then
+    echo "QUALITY was requested/effective, but no active NR+EASU+RCAS CPU stage timings were recorded" >&2
+    cat "$output_dir/performance-samples-active.logcat.txt" >&2
+    exit 1
+fi
+echo "QUALITY NR+EASU+RCAS stages were measured; clean synthetic frames need not differ pixel-for-pixel from BALANCED."
 if grep -Fq 'display_fps=' "$output_dir/performance-samples.logcat.txt"; then
     echo "Performance sample incorrectly reports renderer callbacks as display FPS" >&2
     exit 1
@@ -360,8 +367,6 @@ assert_different_pixels "$output_dir/off-paused.rgb" "$output_dir/performance-pa
     "PERFORMANCE (EASU) and OFF (bilinear) captures were identical"
 assert_different_pixels "$output_dir/off-paused.rgb" "$output_dir/fsr1-paused.rgb" \
     "BALANCED (EASU+RCAS) and OFF (bilinear) captures were identical"
-assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/quality-paused.rgb" \
-    "QUALITY and BALANCED captures were identical"
 assert_different_pixels "$output_dir/fsr1-paused.rgb" "$output_dir/fsr1-sharpness9.rgb" \
     "BALANCED sharpness 8 and 9 produced identical output"
 
