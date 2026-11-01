@@ -391,6 +391,14 @@ class MainActivity : Activity() {
                 dp(10),
                 if (focused) dp(3) else dp(1),
             )
+            if (focused && view.contentDescription == "Open detailed video and renderer diagnostics") {
+                view.post {
+                    val visibleBounds = android.graphics.Rect()
+                    val fullyVisible = view.getGlobalVisibleRect(visibleBounds) &&
+                        visibleBounds.width() >= view.width && visibleBounds.height() >= view.height
+                    Log.i(TAG, "diagnostics=focused visible=$fullyVisible bounds=$visibleBounds")
+                }
+            }
         }
         setOnClickListener { action() }
     }
@@ -804,6 +812,7 @@ class MainActivity : Activity() {
                 diagnosticsButton.requestFocus()
             }
             .show()
+        Log.i(TAG, "diagnostics=open")
     }
 
     @Suppress("DEPRECATION")
