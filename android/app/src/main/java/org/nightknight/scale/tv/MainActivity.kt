@@ -18,11 +18,13 @@ import android.view.Display
 import android.view.Gravity
 import android.view.Surface
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import java.io.File
@@ -369,7 +371,22 @@ class MainActivity : Activity() {
         sharpnessSlider.nextFocusDownId = diagnosticsButton.id
         diagnosticsButton.nextFocusUpId = sharpnessSlider.id
         diagnosticsButton.nextFocusDownId = presetButtons[selectedPreset]?.id ?: View.NO_ID
-        return panel
+
+        return ScrollView(this).apply {
+            isFillViewport = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
     }
 
     private fun controlButton(label: String, action: () -> Unit): Button = Button(this).apply {
@@ -392,12 +409,12 @@ class MainActivity : Activity() {
                 if (focused) dp(3) else dp(1),
             )
             if (focused && view.contentDescription == "Open detailed video and renderer diagnostics") {
-                view.post {
+                view.postDelayed({
                     val visibleBounds = android.graphics.Rect()
                     val fullyVisible = view.getGlobalVisibleRect(visibleBounds) &&
                         visibleBounds.width() >= view.width && visibleBounds.height() >= view.height
                     Log.i(TAG, "diagnostics=focused visible=$fullyVisible bounds=$visibleBounds")
-                }
+                }, 350L)
             }
         }
         setOnClickListener { action() }
@@ -852,9 +869,16 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun controlPanelLayoutParams() = FrameLayout.LayoutParams(dp(680), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-        gravity = Gravity.BOTTOM or Gravity.START
-        setMargins(dp(32), dp(20), dp(20), dp(28))
+    private fun controlPanelLayoutParams(): FrameLayout.LayoutParams {
+        val startInset = dp(32)
+        val endInset = dp(20)
+        val availableWidth = (resources.displayMetrics.widthPixels - startInset - endInset).coerceAtLeast(dp(1))
+        val panelWidth = minOf(dp(680), availableWidth)
+        return FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            // WRAP_CONTENT gives the ScrollView an AT_MOST height from the root after these insets.
+            setMargins(startInset, dp(20), endInset, dp(28))
+        }
     }
 
     private fun text(value: String, sizeSp: Int, color: Int, bold: Boolean = false, top: Int = 0) = TextView(this).apply {

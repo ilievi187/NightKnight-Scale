@@ -8,6 +8,11 @@ activity_name="${package_name}/.MainActivity"
 
 mkdir -p "$output_dir"
 adb wait-for-device
+target_device="$(adb get-serialno)"
+if [[ "$target_device" != emulator-* ]]; then
+    echo "Refusing to alter a non-emulator display during the 1080p density smoke: $target_device" >&2
+    exit 2
+fi
 
 for attempt in $(seq 1 90); do
     if [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; then
