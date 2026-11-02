@@ -130,6 +130,38 @@ class OutputResolutionPolicyTest {
     }
 
     @Test
+    fun validatedFallbackClearsTransientFailureWithoutLosingTheOriginalRequestReason() {
+        val originalNative4kFailure = "GL surface callback reported 1920×1080; requested buffer 3840×2160 was not reached"
+        val native4kReasonOnce = OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(
+            OutputResolutionMode.NATIVE_4K,
+            "$originalNative4kFailure; 1080P fallback buffer is unverified: late callback mismatch",
+        )
+        assertEquals(originalNative4kFailure, native4kReasonOnce)
+        assertEquals(
+            originalNative4kFailure,
+            OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(
+                OutputResolutionMode.NATIVE_4K,
+                native4kReasonOnce,
+            ),
+        )
+        val autoReasonOnce = OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(
+            OutputResolutionMode.AUTO,
+            "AUTO keeps 1080P until a device profile is validated; 1080P fallback buffer is unverified: transient EGL mismatch",
+        )
+        assertEquals("AUTO keeps 1080P until a device profile is validated", autoReasonOnce)
+        assertEquals(
+            autoReasonOnce,
+            OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(OutputResolutionMode.AUTO, autoReasonOnce),
+        )
+        assertNull(
+            OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(
+                OutputResolutionMode.P1080,
+                "1080P callback mismatch",
+            ),
+        )
+    }
+
+    @Test
     fun anUnchangedCallbackSizeCanBeValidatedWithoutWaitingForAnotherSurfaceChangedEvent() {
         assertTrue(OutputResolutionPolicy.canValidateCurrentSurfaceImmediately(fullHd, fullHd))
         assertTrue(OutputResolutionPolicy.canValidateCurrentSurfaceImmediately(fourK, fourK))

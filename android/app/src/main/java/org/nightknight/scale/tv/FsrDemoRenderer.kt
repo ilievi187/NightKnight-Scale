@@ -1601,7 +1601,14 @@ internal class FsrDemoRenderer(
             native4kSurfaceVerified = requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K
             effectiveOutputResolution = OutputResolutionPolicy.effectiveResolutionForBuffer(requestedSurfaceBufferSize, null)
             surfaceFallbackRequested = false
-            if (native4kSurfaceVerified) outputResolutionFallbackReason = null
+            outputResolutionFallbackReason = if (native4kSurfaceVerified) {
+                null
+            } else {
+                OutputResolutionPolicy.fallbackReasonAfterVerifiedBuffer(
+                    requestedOutputResolution = requestedOutputResolution,
+                    existingReason = outputResolutionFallbackReason,
+                )
+            }
             Log.i(
                 TAG,
                 "output_resolution_verified requested=${requestedOutputResolution.id} effective=${effectiveOutputResolution.id} " +

@@ -100,6 +100,28 @@ internal object OutputResolutionPolicy {
         return null
     }
 
+    /**
+     * Clears transient fallback-buffer validation errors after a later callback/EGL pair verifies 1080P,
+     * while retaining the original AUTO/native-4K decision reason.
+     */
+    fun fallbackReasonAfterVerifiedBuffer(
+        requestedOutputResolution: OutputResolutionMode,
+        existingReason: String?,
+    ): String? {
+        val reason = existingReason?.takeIf { it.isNotBlank() } ?: return null
+        val transientFallbackMarker = "; 1080P fallback buffer is unverified:"
+        val transientMarkerIndex = reason.indexOf(transientFallbackMarker)
+        if (transientMarkerIndex >= 0) {
+            return reason.substring(0, transientMarkerIndex).trim().takeIf { it.isNotEmpty() }
+        }
+        return when (requestedOutputResolution) {
+            OutputResolutionMode.P1080 -> null
+            OutputResolutionMode.AUTO,
+            OutputResolutionMode.NATIVE_4K,
+            -> reason
+        }
+    }
+
     /** Returns a visible failure reason, or null only when the 4K surface and active target validate. */
     fun native4kFailureReason(
         surfaceCallbackSize: PixelSize,
