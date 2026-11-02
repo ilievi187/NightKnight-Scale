@@ -184,6 +184,7 @@ assert_native4k_linear_final_strategy() {
     adb logcat -c
     adb shell am start -W -n "$activity_name" --es nkscale_output_resolution 1080p --es nkscale_strategy auto
     wait_for_log_marker 'video=playing source=' 'restart after native-4K probe' 45
+    wait_for_log_marker 'output_resolution_verified requested=1080p effective=1080p surface=1920×1080 egl=1920×1080' 'verified EGL surface after process/surface recreation' 45
 }
 
 assert_diagnostics_reachable_at_1080p() {
@@ -191,7 +192,7 @@ assert_diagnostics_reachable_at_1080p() {
     wait_for_log_marker 'shaders=ready' 'GLES initialization at 1080p dense UI scale'
     wait_for_log_marker 'video_frame=consumed' 'video frame at 1080p dense UI scale'
     wait_for_log_marker 'surface=1920×1080' '1920x1080 GLES surface'
-    wait_for_log_marker 'output_resolution_verified requested=1080p effective=1080p surface=1920×1080 egl=1920×1080' 'verified 1080p callback and EGL buffer'
+    wait_for_log_marker 'output_resolution_verified requested=auto effective=1080p surface=1920×1080 egl=1920×1080' 'verified AUTO 1080p callback and EGL buffer'
 
     # Focus chain: selected preset -> picker -> playback -> sharpness -> output resolution -> strategy -> Diagnostics.
     for _ in 1 2 3 4 5 6; do adb shell input keyevent KEYCODE_DPAD_DOWN; done

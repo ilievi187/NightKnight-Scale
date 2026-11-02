@@ -39,6 +39,36 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
             )
             return result.returncode, result.stdout + result.stderr, calls.exists()
 
+    def test_dense_ui_diagnostics_marker_matches_auto_1080p_startup_request(self):
+        script = SMOKE_SCRIPT.read_text(encoding="utf-8")
+        first_launch = next(
+            line
+            for line in script.splitlines()
+            if line.startswith('adb shell am start -W -n "$activity_name"')
+        )
+        self.assertNotIn("--es nkscale_output_resolution", first_launch)
+        diagnostics_section = script.split("assert_diagnostics_reachable_at_1080p() {", 1)[1].split(
+            "\n}\n\nassert_diagnostics_reachable_at_1080p", 1
+        )[0]
+        self.assertIn(
+            "output_resolution_verified requested=auto effective=1080p surface=1920×1080 egl=1920×1080",
+            diagnostics_section,
+        )
+        native4k_section = script.split("assert_native4k_linear_final_strategy() {", 1)[1].split(
+            "\n}\n\nassert_diagnostics_reachable_at_1080p", 1
+        )[0]
+        self.assertIn(
+            "output_resolution_verified requested=1080p effective=1080p surface=1920×1080 egl=1920×1080",
+            native4k_section,
+        )
+        explicit_1080p_restart = native4k_section.index(
+            'adb shell am start -W -n "$activity_name" --es nkscale_output_resolution 1080p'
+        )
+        verified_1080p_marker = native4k_section.index(
+            "output_resolution_verified requested=1080p effective=1080p surface=1920×1080 egl=1920×1080"
+        )
+        self.assertLess(explicit_1080p_restart, verified_1080p_marker)
+
     def test_non_emulator_serial_is_rejected_before_any_adb_command(self):
         code, output, adb_was_called = self.run_smoke_with_serial("192.0.2.10:5555")
         self.assertEqual(code, 2, output)
