@@ -28,9 +28,16 @@ class RenderPerformancePolicyTest {
         val policy = RuntimeRenderFallbackPolicy()
 
         assertNull(policy.observe(RenderMode.FSR1_DENOISE, 30f, 40f))
-        assertNull(policy.observe(RenderMode.FSR1_DENOISE, 30f, 35f))
+        assertNull(policy.observe(RenderMode.FSR1_DENOISE, 30f, 34f))
         assertNull(policy.observe(RenderMode.FSR1_DENOISE, 30f, 40f))
         assertEquals(RenderMode.FSR1, policy.observe(RenderMode.FSR1_DENOISE, 30f, 40f))
+    }
+
+    @Test
+    fun thirtyFpsMissOverThreePercentTriggersFallbackAfterTwoWindows() {
+        val policy = RuntimeRenderFallbackPolicy()
+        assertNull(policy.observe(RenderMode.FSR1, 30f, 35f))
+        assertEquals(RenderMode.EASU_ONLY, policy.observe(RenderMode.FSR1, 30f, 35f))
     }
 
     @Test

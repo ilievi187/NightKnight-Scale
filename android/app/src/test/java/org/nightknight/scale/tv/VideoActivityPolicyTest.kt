@@ -23,6 +23,20 @@ class VideoActivityPolicyTest {
     }
 
     @Test
+    fun playbackPauseTransitionRequestsFramePacingReset() {
+        val transition = VideoActivityPolicy.playbackTransition(currentlyPlaying = true)
+        assertFalse(transition.nextIsPlaying)
+        assertTrue(transition.resetFramePacingWindows)
+    }
+
+    @Test
+    fun playbackResumeTransitionRequestsFramePacingReset() {
+        val transition = VideoActivityPolicy.playbackTransition(currentlyPlaying = false)
+        assertTrue(transition.nextIsPlaying)
+        assertTrue(transition.resetFramePacingWindows)
+    }
+
+    @Test
     fun invalidWindowOrFutureCallbackTimestampIsInactive() {
         assertFalse(VideoActivityPolicy.hasRecentFrameCallback(100L, 100L, 0L))
         assertFalse(VideoActivityPolicy.hasRecentFrameCallback(201L, 200L, 100L))

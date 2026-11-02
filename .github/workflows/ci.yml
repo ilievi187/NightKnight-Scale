@@ -98,6 +98,8 @@ jobs:
           sudo apt-get install --yes --no-install-recommends ffmpeg
       - name: Launch Android TV 1080p emulator and run GLES/remote smoke
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_SERIAL: emulator-5554
         with:
           api-level: 36
           target: android-tv

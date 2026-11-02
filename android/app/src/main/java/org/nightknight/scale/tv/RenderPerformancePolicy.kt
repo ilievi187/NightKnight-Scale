@@ -13,6 +13,8 @@ internal data class RenderCpuTimings(
     val easu: CpuSubmitSummary?,
     val rcas: CpuSubmitSummary?,
     val present: CpuSubmitSummary?,
+    val easuStages: List<CpuSubmitSummary?> = emptyList(),
+    val linearFinalScale: CpuSubmitSummary? = null,
 )
 
 /** Single-threaded rolling accumulator for CPU wall time around GLES submission; driver calls may still stall. */
@@ -47,7 +49,7 @@ internal class CpuSubmitWindow {
  * the known source frame budget. This is a render-loop heuristic, not a GPU timer or display FPS.
  */
 internal class RuntimeRenderFallbackPolicy(
-    private val frameBudgetMargin: Float = 1.10f,
+    private val frameBudgetMargin: Float = 1.03f,
     private val consecutiveOverBudgetWindows: Int = 2,
 ) {
     private var overBudgetWindows = 0
@@ -94,5 +96,47 @@ internal class RuntimeRenderFallbackPolicy(
         RenderMode.FSR1 -> RenderMode.EASU_ONLY
         RenderMode.EASU_ONLY -> RenderMode.BILINEAR
         RenderMode.BILINEAR -> null
+    }
+}
+
+/** Drops a verified 4K window buffer only after FSR mode reaches bilinear and overload persists. */
+internal class Native4kResolutionFallbackPolicy(
+    private val frameBudgetMargin: Float = 1.03f,
+    private val consecutiveOverBudgetWindows: Int = 2,
+) {
+    private var overBudgetWindows = 0
+
+    init {
+        require(frameBudgetMargin >= 1f && frameBudgetMargin.isFinite())
+        require(consecutiveOverBudgetWindows > 0)
+    }
+
+    @Synchronized
+    fun observe(
+        native4kSurfaceVerified: Boolean,
+        currentMode: RenderMode,
+        sourceActive: Boolean,
+        sourceVideoFps: Float?,
+        averageRendererIntervalMs: Float?,
+    ): Boolean {
+        val fps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
+        val intervalMs = averageRendererIntervalMs?.takeIf { it > 0f && it.isFinite() }
+        if (!native4kSurfaceVerified || currentMode != RenderMode.BILINEAR || !sourceActive || fps == null || intervalMs == null) {
+            overBudgetWindows = 0
+            return false
+        }
+        if (intervalMs <= (1_000f / fps) * frameBudgetMargin) {
+            overBudgetWindows = 0
+            return false
+        }
+        overBudgetWindows += 1
+        if (overBudgetWindows < consecutiveOverBudgetWindows) return false
+        overBudgetWindows = 0
+        return true
+    }
+
+    @Synchronized
+    fun reset() {
+        overBudgetWindows = 0
     }
 }

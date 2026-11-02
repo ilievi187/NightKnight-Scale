@@ -7,11 +7,16 @@ package_name="org.nightknight.scale.tv"
 activity_name="${package_name}/.MainActivity"
 
 mkdir -p "$output_dir"
+target_device="${ANDROID_SERIAL:-}"
+if [[ ! "$target_device" =~ ^emulator-[0-9]+$ ]]; then
+    echo "Refusing to issue ADB commands without ANDROID_SERIAL set to an emulator-* serial: ${target_device:-unset}" >&2
+    exit 2
+fi
+export ANDROID_SERIAL="$target_device"
 trap 'adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt" 2>/dev/null || true' EXIT
 adb wait-for-device
-target_device="$(adb get-serialno)"
-if [[ "$target_device" != emulator-* ]]; then
-    echo "Refusing to alter a non-emulator display during the 1080p density smoke: $target_device" >&2
+if [[ "$(adb get-serialno)" != "$target_device" ]]; then
+    echo "ADB did not select the requested emulator serial: $target_device" >&2
     exit 2
 fi
 
@@ -120,24 +125,93 @@ wait_for_easu_validation_result() {
     return 1
 }
 
+assert_native4k_linear_final_strategy() {
+    echo "Native-4K strategy smoke: requesting the 576p anamorphic C pipeline on the emulator"
+    adb shell am force-stop "$package_name"
+    adb logcat -c
+    adb shell am start -W -n "$activity_name" \
+        --es nkscale_output_resolution native_4k \
+        --es nkscale_strategy c_easu_1080_linear_2160 \
+        --es nkscale_test_source 720x576-16x9-25
+    wait_for_log_marker 'output_resolution_request requested=native_4k requested_buffer=3840×2160' 'native-4K buffer request' 30
+    wait_for_log_marker 'video=playing source=test-videos/scale-test-720x576-16x9-25fps.mp4' '576p 16:9 anamorphic benchmark clip' 45
+    wait_for_log_marker 'video_frame=consumed' 'decoded 576p benchmark frame' 45
+
+    local verified=0
+    for attempt in $(seq 1 90); do
+        local log_output
+        log_output="$(adb logcat -d -s NKScaleTV:V)"
+        if grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k' <<< "$log_output"; then
+            verified=1
+            break
+        fi
+        if grep -Fq 'output_resolution_fallback requested=native_4k' <<< "$log_output"; then
+            break
+        fi
+        sleep 1
+    done
+
+    local log_output
+    log_output="$(adb logcat -d -s NKScaleTV:V)"
+    if [ "$verified" -eq 1 ]; then
+        if ! grep -Fq 'strategy_requested=c_easu_1080_linear_2160 strategy_effective=c_easu_1080_linear_2160' <<< "$log_output" || \
+           ! grep -Fq 'linear_final=true' <<< "$log_output" || \
+           ! grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160' <<< "$log_output"; then
+            echo "4K output was verified, but the C strategy/FBO dimensions were not confirmed" >&2
+            printf '%s\n' "$log_output" >&2
+            exit 1
+        fi
+        echo "Emulator-only: 3840×2160 surface/EGL/FBO and the 576p→1080p EASU→2160p linear-final plan were verified. This is not PowerVR or panel evidence."
+    else
+        if ! grep -Fq 'output_resolution_fallback requested=native_4k' <<< "$log_output"; then
+            echo "Native-4K emulator request neither verified nor reported a visible fallback" >&2
+            printf '%s\n' "$log_output" >&2
+            exit 1
+        fi
+        if ! grep -Fq 'strategy_requested=c_easu_1080_linear_2160' <<< "$log_output"; then
+            echo "Native-4K fallback did not retain the requested C strategy in renderer diagnostics" >&2
+            printf '%s\n' "$log_output" >&2
+            exit 1
+        fi
+        wait_for_log_marker 'output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080' 'validated effective 1080p fallback buffer' 45
+        echo "Emulator-only: native-4K request safely fell back with a visible reason; no native-4K success is claimed."
+    fi
+    wait_for_log_marker 'performance_sample requested=fsr1 ' 'native-4K strategy performance window' 90
+    log_output="$(adb logcat -d -s NKScaleTV:V)"
+    adb exec-out screencap -p > "$output_dir/native4k-strategy-c.png"
+    printf '%s\n' "$log_output" > "$output_dir/native4k-strategy-c.logcat.txt"
+    adb shell am force-stop "$package_name"
+    adb logcat -c
+    adb shell am start -W -n "$activity_name" --es nkscale_output_resolution 1080p --es nkscale_strategy auto
+    wait_for_log_marker 'video=playing source=' 'restart after native-4K probe' 45
+}
+
 assert_diagnostics_reachable_at_1080p() {
     echo "1080p diagnostics test: waiting for startup at density 400"
     wait_for_log_marker 'shaders=ready' 'GLES initialization at 1080p dense UI scale'
     wait_for_log_marker 'video_frame=consumed' 'video frame at 1080p dense UI scale'
     wait_for_log_marker 'surface=1920×1080' '1920x1080 GLES surface'
+    wait_for_log_marker 'output_resolution_verified requested=1080p effective=1080p surface=1920×1080 egl=1920×1080' 'verified 1080p callback and EGL buffer'
 
-    # Focus chain: selected preset -> picker -> playback -> sharpness -> Diagnostics.
-    for _ in 1 2 3 4; do adb shell input keyevent KEYCODE_DPAD_DOWN; done
+    # Focus chain: selected preset -> picker -> playback -> sharpness -> output resolution -> strategy -> Diagnostics.
+    for _ in 1 2 3 4 5 6; do adb shell input keyevent KEYCODE_DPAD_DOWN; done
     wait_for_log_marker 'diagnostics=focused visible=true' 'visible Diagnostics focus after D-pad navigation' 15
     adb shell input keyevent KEYCODE_DPAD_CENTER
     wait_for_log_marker 'diagnostics=open' 'Diagnostics dialog opening at 1080p' 15
     adb shell input keyevent KEYCODE_BACK
 
+    # Dismiss returns focus to Diagnostics; UP reaches Strategy and CENTER selects A.
+    adb shell input keyevent KEYCODE_DPAD_UP
+    adb shell input keyevent KEYCODE_DPAD_CENTER
+    wait_for_log_marker 'scaling_strategy_selected=a_1080p_system_scaler' 'D-pad strategy selector activation' 15
+    wait_for_log_marker 'scaling_strategy requested=a_1080p_system_scaler effective=a_1080p_system_scaler' 'renderer reconfiguration for strategy A' 15
+
     # Restore the AVD's default density before pixel-comparison playback tests.
     adb shell am force-stop "$package_name"
+    adb shell pm clear "$package_name" >/dev/null
     adb shell wm density reset >/dev/null
     adb logcat -c
-    adb shell am start -W -n "$activity_name" --ez nkscale_validate_easu_input true
+    adb shell am start -W -n "$activity_name" --ez nkscale_validate_easu_input true --es nkscale_output_resolution 1080p --es nkscale_strategy auto
     echo "1080p diagnostics test: passed; restored default density"
 }
 
@@ -162,8 +236,10 @@ adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_marker 'video=paused' 'remote pause control'
+wait_for_log_marker 'frame_pacing_reset reason=playback_paused' 'pause resets renderer pacing/hysteresis'
 adb shell input keyevent KEYCODE_DPAD_CENTER
 wait_for_log_occurrences 'video=playing source=' 2 'remote resume control'
+wait_for_log_marker 'frame_pacing_reset reason=playback_resumed' 'resume resets renderer pacing/hysteresis'
 sleep 1
 adb exec-out screencap -p > "$output_dir/video-resumed-a.png"
 sleep 1
@@ -245,14 +321,19 @@ adb shell input keyevent KEYCODE_DPAD_RIGHT
 sleep 1
 adb exec-out screencap -p > "$output_dir/fsr1-sharpness9.png"
 adb shell input keyevent KEYCODE_DPAD_DOWN
+adb shell input keyevent KEYCODE_DPAD_DOWN
+adb shell input keyevent KEYCODE_DPAD_DOWN
 adb shell input keyevent KEYCODE_DPAD_CENTER
 sleep 1
 adb exec-out screencap -p > "$output_dir/diagnostics-dialog.png"
 adb shell uiautomator dump /sdcard/nkscale-diagnostics.xml >/dev/null 2>&1
 adb pull /sdcard/nkscale-diagnostics.xml "$output_dir/diagnostics-dialog.xml" >/dev/null 2>&1
 if ! grep -Fq 'NightKnight · Diagnostics' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'Output resolution requested' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'EGL window-surface query' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'Benchmark pipeline' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'EASU pass count' "$output_dir/diagnostics-dialog.xml" || \
-   ! grep -Fq 'RGBA render-target estimate' "$output_dir/diagnostics-dialog.xml" || \
+   ! grep -Fq 'Planned app-owned RGBA targets' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'GPU execution time' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'Display presentation timing' "$output_dir/diagnostics-dialog.xml" || \
    ! grep -Fq 'SurfaceTexture callback cadence' "$output_dir/diagnostics-dialog.xml" || \
@@ -311,6 +392,8 @@ elif [[ "$validation_result_count" -ne 1 ]]; then
     echo "Expected exactly one per-session EASU equivalence result; saw $validation_result_count" >&2
     exit 1
 fi
+
+assert_native4k_linear_final_strategy
 
 # Exercise actual local selection/playback at 25/30/50/60 fps and portrait/576p aspect shapes.
 bash android/scripts/tv-local-media-smoke.sh "$output_dir/local-media"
@@ -380,7 +463,9 @@ sha256sum \
     "$output_dir/quality-paused.png" \
     "$output_dir/fsr1-paused.png" \
     "$output_dir/fsr1-sharpness9.png" \
+    "$output_dir/native4k-strategy-c.png" \
+    "$output_dir/native4k-strategy-c.logcat.txt" \
     "$output_dir/preset-and-settings-logcat.txt" \
     "$output_dir/logcat.txt" \
     "$output_dir/local-media/local-input-playback.txt"
-echo "Android TV emulator smoke passed: four render presets, persisted settings, packaged playback and automated local Photo Picker playback across 25/30/50/60 fps sources. SwiftShader emulator only; no TCL hardware validation. Pixel differences are not quality scores."
+echo "Android TV emulator smoke passed: four render presets, selectable A-D strategy UI, requested native-4K C-path verification/fallback, persisted settings and local Photo Picker playback at 25/30/50/60 fps. SwiftShader emulator only; no TCL hardware validation. Pixel differences are not quality scores."

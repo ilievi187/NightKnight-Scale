@@ -8,6 +8,7 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
+import android.opengl.EGL14
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -23,9 +24,27 @@ internal data class RendererSnapshot(
     val source: PixelSize,
     val processedTarget: PixelSize,
     val surface: PixelSize,
+    val eglSurface: PixelSize?,
     val gpuRenderer: String,
     val glVersion: String,
     val maxTextureSize: Int,
+    val maxRenderbufferSize: Int,
+    val maxViewportSize: PixelSize,
+    val requestedOutputResolution: OutputResolutionMode,
+    val effectiveOutputResolution: EffectiveOutputResolution,
+    val outputResolutionFallbackReason: String?,
+    val native4kSurfaceVerified: Boolean,
+    val native4kPerformanceValidatedForAuto: Boolean,
+    val surfaceFallbackRequested: Boolean,
+    val surfaceChangeCount: Long,
+    val requestedScalingStrategy: FsrComparisonStrategy,
+    val effectiveScalingStrategy: FsrComparisonStrategy,
+    val scalingStrategyFallbackReason: String?,
+    val linearFinalScale: Boolean,
+    val systemScalerExpected: Boolean,
+    val easuStageSizes: List<PixelSize>,
+    val shaderPassOutputSizes: List<PixelSize>,
+    val estimatedRgbaWriteBytesPerFrame: Long,
     val rendererCallbackFps: Float,
     val cpuGlSubmitMs: Float?,
     val cpuTimings: RenderCpuTimings,
@@ -64,6 +83,7 @@ internal data class RendererSnapshot(
 internal class FsrDemoRenderer(
     private val context: Context,
     private val onVideoSurfaceAvailable: (SurfaceTexture, VideoTestSource) -> Unit,
+    private val requestRender: () -> Unit = {},
 ) : GLSurfaceView.Renderer {
     private data class ShaderBindings(
         val position: Int,
@@ -109,6 +129,9 @@ internal class FsrDemoRenderer(
     private var surfaceSize = PixelSize(0, 0)
 
     @Volatile
+    private var eglSurfaceSize: PixelSize? = null
+
+    @Volatile
     private var gpuRenderer = "Detecting GLES renderer…"
 
     @Volatile
@@ -116,6 +139,57 @@ internal class FsrDemoRenderer(
 
     @Volatile
     private var maxTextureSize = 0
+
+    @Volatile
+    private var maxRenderbufferSize = 0
+
+    @Volatile
+    private var maxViewportSize = PixelSize(0, 0)
+
+    @Volatile
+    private var requestedOutputResolution = OutputResolutionMode.AUTO
+
+    @Volatile
+    private var requestedSurfaceBufferSize = OutputResolutionPolicy.FULL_HD
+
+    @Volatile
+    private var effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+
+    @Volatile
+    private var outputResolutionFallbackReason: String? = null
+
+    @Volatile
+    private var native4kSurfaceVerified = false
+
+    @Volatile
+    private var native4kPerformanceValidatedForAuto = false
+
+    @Volatile
+    private var surfaceFallbackRequested = false
+
+    @Volatile
+    private var native4kFallbackLatched = false
+
+    @Volatile
+    private var surfaceChangeCount = 0L
+
+    @Volatile
+    var scalingStrategy = FsrComparisonStrategy.AUTO
+
+    @Volatile
+    var testSourceOverride: VideoTestSource? = null
+
+    @Volatile
+    private var effectiveScalingStrategy = FsrComparisonStrategy.AUTO
+
+    @Volatile
+    private var currentScalingPlan: FsrScalingPlan? = null
+
+    @Volatile
+    private var strategyBaseTarget = PixelSize(0, 0)
+
+    @Volatile
+    private var linearFinalScale = false
 
     @Volatile
     private var rendererCallbackFps = 0.0f
@@ -162,6 +236,7 @@ internal class FsrDemoRenderer(
     private val pendingVideoFrameCallbacks = AtomicLong()
     private val lastVideoFrameCallbackNs = AtomicLong()
     private val decoderLagEvents = AtomicLong()
+    private val frameRenderRequestGate = FrameRenderRequestGate()
     private var previousFrameStartNs = 0L
     private var frameIntervalWindowStartNs = 0L
     private var frameIntervalWindowTotalNs = 0L
@@ -191,6 +266,8 @@ internal class FsrDemoRenderer(
     private var shaderFallbackReason: String? = null
 
     private val runtimeRenderFallbackPolicy = RuntimeRenderFallbackPolicy()
+    private val native4kPerformanceValidationPolicy = Native4kPerformanceValidationPolicy()
+    private val native4kResolutionFallbackPolicy = Native4kResolutionFallbackPolicy()
 
     @Volatile
     private var runtimeEffectiveMode: RenderMode? = null
@@ -228,12 +305,17 @@ internal class FsrDemoRenderer(
     private var rcasTexture = 0
     private var easuIntermediateTextureA = 0
     private var easuIntermediateTextureB = 0
+    private var strategyBaseTexture = 0
     private var sourceFramebuffer = 0
     private var denoiseFramebuffer = 0
     private var framebuffer = 0
     private var rcasFramebuffer = 0
     private var easuIntermediateFramebufferA = 0
     private var easuIntermediateFramebufferB = 0
+    private var strategyBaseFramebuffer = 0
+    private var easuIntermediateSizeA = PixelSize(0, 0)
+    private var easuIntermediateSizeB = PixelSize(0, 0)
+    @Volatile
     private var easuStageSizes: List<PixelSize> = emptyList()
     private var decodedSurfaceTexture: SurfaceTexture? = null
     private var surfaceVideoSource: VideoTestSource? = null
@@ -257,6 +339,8 @@ internal class FsrDemoRenderer(
     private val inputUpdateCpuSubmitWindow = CpuSubmitWindow()
     private val denoiseCpuSubmitWindow = CpuSubmitWindow()
     private val easuCpuSubmitWindow = CpuSubmitWindow()
+    private val easuStageCpuSubmitWindows = Array(16) { CpuSubmitWindow() }
+    private val linearFinalCpuSubmitWindow = CpuSubmitWindow()
     private val rcasCpuSubmitWindow = CpuSubmitWindow()
     private val presentCpuSubmitWindow = CpuSubmitWindow()
 
@@ -275,9 +359,27 @@ internal class FsrDemoRenderer(
         source = sourceSize,
         processedTarget = targetSize,
         surface = surfaceSize,
+        eglSurface = eglSurfaceSize,
         gpuRenderer = gpuRenderer,
         glVersion = glVersion,
         maxTextureSize = maxTextureSize,
+        maxRenderbufferSize = maxRenderbufferSize,
+        maxViewportSize = maxViewportSize,
+        requestedOutputResolution = requestedOutputResolution,
+        effectiveOutputResolution = effectiveOutputResolution,
+        outputResolutionFallbackReason = outputResolutionFallbackReason,
+        native4kSurfaceVerified = native4kSurfaceVerified,
+        native4kPerformanceValidatedForAuto = native4kPerformanceValidatedForAuto,
+        surfaceFallbackRequested = surfaceFallbackRequested,
+        surfaceChangeCount = surfaceChangeCount,
+        requestedScalingStrategy = scalingStrategy,
+        effectiveScalingStrategy = effectiveScalingStrategy,
+        scalingStrategyFallbackReason = currentScalingPlan?.strategyFallbackReason,
+        linearFinalScale = linearFinalScale,
+        systemScalerExpected = currentScalingPlan?.systemScalerExpected ?: false,
+        easuStageSizes = easuStageSizes,
+        shaderPassOutputSizes = currentScalingPlan?.passOutputSizes.orEmpty(),
+        estimatedRgbaWriteBytesPerFrame = currentScalingPlan?.estimatedRgbaWriteBytesPerFrame ?: 0L,
         rendererCallbackFps = rendererCallbackFps,
         cpuGlSubmitMs = cpuGlSubmitMs,
         cpuTimings = latestCpuTimings,
@@ -288,7 +390,7 @@ internal class FsrDemoRenderer(
         sourceVideoFps = sourceVideoFps,
         surfaceTextureCallbackFps = surfaceTextureCallbackFps,
         easuStageCount = easuStageCount,
-        estimatedRgbaTextureBytes = RenderPolicy.estimatedRgbaTextureBytes(
+        estimatedRgbaTextureBytes = currentScalingPlan?.estimatedRgbaTextureBytes ?: RenderPolicy.estimatedRgbaTextureBytes(
             sourceSize,
             targetSize,
             surfaceSize,
@@ -330,6 +432,49 @@ internal class FsrDemoRenderer(
         decoderLagEvents.incrementAndGet()
     }
 
+    fun resetFrameRenderRequests() {
+        frameRenderRequestGate.reset()
+    }
+
+    fun resetFramePacingWindows() {
+        resetRendererMeasurementWindows()
+        resetCpuSubmitWindows()
+        runtimeRenderFallbackPolicy.reset()
+        resetNative4kPerformanceValidation()
+        performanceSampleWindowStartNs = System.nanoTime()
+    }
+
+    fun resetNative4kPerformanceValidation() {
+        native4kPerformanceValidationPolicy.reset()
+        native4kResolutionFallbackPolicy.reset()
+        native4kPerformanceValidatedForAuto = false
+    }
+
+    /** Called on the UI thread before the matching SurfaceHolder buffer-size request. */
+    fun requestOutputResolution(
+        mode: OutputResolutionMode,
+        requestedBufferSize: PixelSize,
+        policyReason: String? = null,
+    ) {
+        requestedOutputResolution = mode
+        requestedSurfaceBufferSize = requestedBufferSize
+        // Do not mark any requested buffer effective until callback/EGL/GLES/target validation passes.
+        effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+        outputResolutionFallbackReason = policyReason
+        native4kSurfaceVerified = false
+        resetNative4kPerformanceValidation()
+        native4kResolutionFallbackPolicy.reset()
+        surfaceFallbackRequested = false
+        native4kFallbackLatched = false
+    }
+
+    /** Rechecks a fixed-size request when the existing callback dimensions already match it. */
+    fun validateOutputResolutionForCurrentSurface() {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) return
+        eglSurfaceSize = queryCurrentEglSurfaceSize()
+        updateOutputResolutionValidation()
+    }
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
         // Context recreation invalidates the old texture name. Release the old producer
         // surface and request a replacement after onSurfaceChanged selects the source.
@@ -360,9 +505,21 @@ internal class FsrDemoRenderer(
         rcasFramebuffer = 0
         easuIntermediateTextureA = 0
         easuIntermediateTextureB = 0
+        strategyBaseTexture = 0
         easuIntermediateFramebufferA = 0
         easuIntermediateFramebufferB = 0
+        strategyBaseFramebuffer = 0
+        easuIntermediateSizeA = PixelSize(0, 0)
+        easuIntermediateSizeB = PixelSize(0, 0)
+        strategyBaseTarget = PixelSize(0, 0)
+        currentScalingPlan = null
+        resetNative4kPerformanceValidation()
+        native4kSurfaceVerified = false
+        effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+        surfaceFallbackRequested = false
+        native4kFallbackLatched = false
         frameAvailable = false
+        frameRenderRequestGate.reset()
         lastVideoFrameCallbackNs.set(0L)
         allocationFallbackReason = null
         qualityFallbackReason = null
@@ -390,6 +547,16 @@ internal class FsrDemoRenderer(
         val size = IntArray(1)
         GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, size, 0)
         maxTextureSize = size[0]
+        GLES30.glGetIntegerv(GLES30.GL_MAX_RENDERBUFFER_SIZE, size, 0)
+        maxRenderbufferSize = size[0]
+        val viewportLimits = IntArray(2)
+        GLES30.glGetIntegerv(GLES30.GL_MAX_VIEWPORT_DIMS, viewportLimits, 0)
+        maxViewportSize = PixelSize(viewportLimits[0], viewportLimits[1])
+        Log.i(
+            TAG,
+            "gles_limits max_texture=$maxTextureSize max_renderbuffer=$maxRenderbufferSize " +
+                "max_viewport=${maxViewportSize.width}x${maxViewportSize.height}",
+        )
         initializeGpuTimerQuery()
 
         initializeShaderPrograms()
@@ -482,28 +649,26 @@ internal class FsrDemoRenderer(
 
     override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
+        surfaceChangeCount += 1L
         surfaceSize = PixelSize(width, height)
+        eglSurfaceSize = queryCurrentEglSurfaceSize()
         // Avoid allocating an unbounded multi-4K intermediate on unusually large displays.
         targetSize = RenderPolicy.targetFor(surfaceSize, minOf(maxTextureSize, 4096))
         if (targetSize.width <= 0 || targetSize.height <= 0) {
             error = "The GLES device reported an invalid render target size."
             return
         }
-        val source = VideoTestSource.forTarget(targetSize)
-        sourceSize = source.size
-        videoGeometry = VideoGeometry.fromSize(sourceSize)
-        selectedVideoSource = source
+        val source = selectedVideoSource ?: testSourceOverride ?: VideoTestSource.forTarget(targetSize)
+        if (selectedVideoSource == null) {
+            sourceSize = source.size
+            videoGeometry = VideoGeometry.fromSize(sourceSize)
+            selectedVideoSource = source
+        } else if (videoGeometry.codedWidth <= 0 || videoGeometry.codedHeight <= 0) {
+            sourceSize = source.size
+            videoGeometry = VideoGeometry.fromSize(sourceSize)
+        }
         val renderMode = availableModeFor(mode)
-        targetSize = RenderPolicy.targetForGeometry(
-            surface = surfaceSize,
-            geometry = videoGeometry,
-            maxTextureSize = minOf(maxTextureSize, 4096),
-            aspectMode = aspectMode,
-            sourceTextureSize = sourceSize,
-            includeNoiseReduction = renderMode.usesNoiseReduction,
-            includeEasu = renderMode.usesEasu,
-            includeRcas = renderMode.usesRcas,
-        )
+        applyScalingPlan(createScalingPlan(renderMode, sourceSize, videoGeometry))
         if (targetSize.width <= 0 || targetSize.height <= 0) {
             error = "The decoded video size cannot be processed by the GLES renderer."
             return
@@ -513,15 +678,21 @@ internal class FsrDemoRenderer(
                 error = "Could not create the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, error, failure)
             }
-        if (externalCopyProgram != 0) {
+        if (externalCopyProgram != 0 && (externalInputTexture == 0 || surfaceVideoSource != source)) {
             runCatching { createExternalVideoSurface(source) }
                 .onFailure { failure ->
                     videoInputError = "Could not create decoded-video input: ${failure.message ?: failure.javaClass.simpleName}"
                     Log.e(TAG, videoInputError, failure)
                 }
         }
-        updateEasuStagePlan(renderMode)
-        Log.i(TAG, "surface=${surfaceSize} source=${sourceSize} target=${targetSize} easu_stages=$easuStageCount rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()} video=${source.assetPath}")
+        updateOutputResolutionValidation()
+        runtimeRenderFallbackPolicy.reset()
+        resetNative4kPerformanceValidation()
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
+        performanceSampleWindowStartNs = System.nanoTime()
+        Log.i(TAG, "surface=$surfaceSize source=${sourceSize} target=${targetSize} strategy_requested=${scalingStrategy.id} strategy_effective=${effectiveScalingStrategy.id} strategy_fallback=${currentScalingPlan?.strategyFallbackReason ?: "none"} easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale pass_outputs=${currentScalingPlan?.passOutputSizes.orEmpty().joinToString("→")} rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()} video=${source.assetPath}")
+        requestRender()
     }
 
     /** Update aspect ratio override (AUTO, 16:9, 4:3, SQUARE_PIXELS). */
@@ -530,6 +701,29 @@ internal class FsrDemoRenderer(
         if (videoGeometry.codedWidth > 0 && surfaceSize.width > 0) {
             updateDecodedVideoGeometry(videoGeometry)
         }
+    }
+
+    fun applyScalingStrategy(strategy: FsrComparisonStrategy) {
+        if (scalingStrategy == strategy) return
+        scalingStrategy = strategy
+        runtimeRenderFallbackPolicy.reset()
+        runtimeEffectiveMode = null
+        runtimeFallbackReason = null
+        resetNative4kPerformanceValidation()
+        if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
+            val plan = createScalingPlan(availableModeFor(mode), sourceSize, videoGeometry)
+            applyScalingPlan(plan)
+            runCatching { createOrReplaceTargets() }
+                .onFailure { failure ->
+                    error = "Could not allocate targets for ${strategy.label}: ${failure.message ?: failure.javaClass.simpleName}"
+                    Log.e(TAG, error, failure)
+                }
+            updateOutputResolutionValidation()
+        }
+        resetCpuSubmitWindows()
+        resetRendererMeasurementWindows()
+        performanceSampleWindowStartNs = System.nanoTime()
+        Log.i(TAG, "scaling_strategy requested=${strategy.id} effective=${effectiveScalingStrategy.id} target=$targetSize easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes}")
     }
 
     /** Called only on the GL thread after the decoder reports its actual input dimensions. */
@@ -544,34 +738,30 @@ internal class FsrDemoRenderer(
         if (geometry.codedWidth <= 0 || geometry.codedHeight <= 0 || surfaceSize.width <= 0 || surfaceSize.height <= 0) return
         val newSourceSize = geometry.orientedSize
         val renderMode = availableModeFor(mode)
-        val newTargetSize = RenderPolicy.targetForGeometry(
-            surface = surfaceSize,
-            geometry = geometry,
-            maxTextureSize = minOf(maxTextureSize, 4096),
-            aspectMode = aspectMode,
-            sourceTextureSize = newSourceSize,
-            includeNoiseReduction = renderMode.usesNoiseReduction,
-            includeEasu = renderMode.usesEasu,
-            includeRcas = renderMode.usesRcas,
-        )
+        val newPlan = createScalingPlan(renderMode, newSourceSize, geometry)
+        val newTargetSize = newPlan.processingTarget
         if (newTargetSize.width <= 0 || newTargetSize.height <= 0) {
             error = "The decoded video size cannot be processed by the GLES renderer."
             return
         }
-        if (geometry == videoGeometry && newSourceSize == sourceSize && newTargetSize == targetSize) return
+        if (geometry == videoGeometry && newSourceSize == sourceSize && newTargetSize == targetSize &&
+            newPlan.easuStages == easuStageSizes && newPlan.linearFinalScale == linearFinalScale
+        ) return
 
         externalEasuValidated = false
         externalEasuRejected = false
         videoGeometry = geometry
         sourceSize = newSourceSize
-        targetSize = newTargetSize
+        applyScalingPlan(newPlan)
         error = null
         runCatching { createOrReplaceTargets() }
             .onFailure { failure ->
                 error = "Could not resize the FSR render target: ${failure.message ?: failure.javaClass.simpleName}"
                 Log.e(TAG, error, failure)
             }
-        updateEasuStagePlan(renderMode)
+        updateOutputResolutionValidation()
+        runtimeRenderFallbackPolicy.reset()
+        resetNative4kPerformanceValidation()
         resetCpuSubmitWindows()
         resetRendererMeasurementWindows()
         performanceSampleWindowStartNs = System.nanoTime()
@@ -624,20 +814,12 @@ internal class FsrDemoRenderer(
         lastFallbackSourceFps = sourceVideoFps
         val resourceMode = availableModeFor(requested)
         if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
-            val nextTarget = RenderPolicy.targetForGeometry(
-                surface = surfaceSize,
-                geometry = videoGeometry,
-                maxTextureSize = minOf(maxTextureSize, 4096),
-                aspectMode = aspectMode,
-                sourceTextureSize = sourceSize,
-                includeNoiseReduction = resourceMode.usesNoiseReduction,
-                includeEasu = resourceMode.usesEasu,
-                includeRcas = resourceMode.usesRcas,
-            )
+            val nextPlan = createScalingPlan(resourceMode, sourceSize, videoGeometry)
+            val nextTarget = nextPlan.processingTarget
             if (nextTarget.width > 0 && nextTarget.height > 0) {
-                targetSize = nextTarget
+                applyScalingPlan(nextPlan)
                 createOrReplaceTargets()
-                updateEasuStagePlan(resourceMode)
+                updateOutputResolutionValidation()
             }
         }
         if (!requested.usesNoiseReduction) {
@@ -710,6 +892,7 @@ internal class FsrDemoRenderer(
     }
 
     override fun onDrawFrame(unused: GL10?) {
+        frameRenderRequestGate.onRenderStarted()
         val frameStartNs = System.nanoTime()
         val intervalWindowCompleted = recordFrameInterval(frameStartNs)
         applyRequestedMode()
@@ -720,9 +903,11 @@ internal class FsrDemoRenderer(
             maxIdleNs = FALLBACK_SOURCE_ACTIVITY_TIMEOUT_NS,
         )
         if (intervalWindowCompleted && decodedVideoFrames >= minimumFramesForBudgetCheck() && recentSourceFrameActivity) {
+            updateNative4kPerformanceValidation(recentSourceFrameActivity)
             updateRuntimeFallbackForFrameBudget()
         } else if (!recentSourceFrameActivity) {
             runtimeRenderFallbackPolicy.reset()
+            native4kResolutionFallbackPolicy.reset()
         }
         if (error != null || presentProgram == 0 || (inputTexture == 0 && externalInputTexture == 0)) {
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -736,13 +921,14 @@ internal class FsrDemoRenderer(
             val activeMode = resolveActiveMode()
             effectiveMode = activeMode
             val externalEasuValidationEligible = externalEasuAvailable && !externalEasuRejected &&
-                externalInputTexture != 0 && activeMode.usesEasu && !activeMode.usesNoiseReduction
+                externalInputTexture != 0 && activeMode.usesEasu && easuStageSizes.isNotEmpty() && !activeMode.usesNoiseReduction
             var directEasuInput = EasuExternalInputPolicy.shouldUseDirectInput(
                 programAvailable = externalEasuAvailable && !externalEasuRejected,
                 outputEquivalent = externalEasuValidated,
                 externalTextureAvailable = externalInputTexture != 0,
                 mode = activeMode,
             )
+            if (linearFinalScale && easuStageSizes.isEmpty()) directEasuInput = false
             val directPresentationInput = activeMode == RenderMode.BILINEAR &&
                 externalCopyProgram != 0 && externalInputTexture != 0
             val copyDecodedFrameToRgba = when {
@@ -812,9 +998,7 @@ internal class FsrDemoRenderer(
                     if (hasDecodedFrame && directPresentationInput) presentExternalVideoDirect() else presentOriginal()
                 }
                 RenderMode.EASU_ONLY -> {
-                    measureCpuSubmit(easuCpuSubmitWindow) {
-                        drawEasuChain(inputTexture, useExternalInput = directEasuInput && hasDecodedFrame)
-                    }
+                    drawScalingStrategy(inputTexture, useExternalInput = directEasuInput && hasDecodedFrame)
                     measureCpuSubmit(presentCpuSubmitWindow) { presentProcessed(outputTexture) }
                 }
                 RenderMode.FSR1, RenderMode.FSR1_DENOISE -> {
@@ -824,9 +1008,7 @@ internal class FsrDemoRenderer(
                     } else {
                         inputTexture
                     }
-                    measureCpuSubmit(easuCpuSubmitWindow) {
-                        drawEasuChain(easuInput, useExternalInput = directEasuInput && hasDecodedFrame)
-                    }
+                    drawScalingStrategy(easuInput, useExternalInput = directEasuInput && hasDecodedFrame)
                     if (rcasTexture == 0) {
                         measureCpuSubmit(rcasCpuSubmitWindow) { drawRcasToSurface() }
                     } else {
@@ -877,10 +1059,32 @@ internal class FsrDemoRenderer(
     private fun minimumFramesForBudgetCheck(): Long =
         maxOf(5L, ((sourceVideoFps ?: 0f) * 0.5f).toLong())
 
+    private fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
+        val newlyValidated = native4kPerformanceValidationPolicy.observe(
+            native4kSurfaceVerified = native4kSurfaceVerified &&
+                requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K &&
+                mode.usesEasu && effectiveMode == mode && runtimeFallbackReason == null &&
+                allocationFallbackReason == null && qualityFallbackReason == null,
+            sourceActive = sourceActive,
+            sourceVideoFps = sourceVideoFps,
+            averageRendererIntervalMs = averageFrameIntervalMs,
+        )
+        if (newlyValidated) {
+            native4kPerformanceValidatedForAuto = true
+            Log.i(
+                TAG,
+                "native4k_auto_profile=validated source_fps=${sourceVideoFps?.let { "%.2f".format(it) } ?: "unknown"} " +
+                    "renderer_interval_avg_ms=${averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "N/A"} " +
+                    "effective_mode=${effectiveMode.id}",
+            )
+        }
+    }
+
     private fun updateRuntimeFallbackForFrameBudget() {
         val sourceFps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
         if (sourceFps != lastFallbackSourceFps) {
             runtimeRenderFallbackPolicy.reset()
+            native4kResolutionFallbackPolicy.reset()
             runtimeEffectiveMode = null
             runtimeFallbackReason = null
             lastFallbackSourceFps = sourceFps
@@ -892,20 +1096,49 @@ internal class FsrDemoRenderer(
         val knownSourceFps = sourceFps ?: return
         val measuredRendererIntervalMs = averageFrameIntervalMs
         val current = runtimeEffectiveMode ?: resolveActiveMode()
-        val next = runtimeRenderFallbackPolicy.observe(current, knownSourceFps, measuredRendererIntervalMs) ?: return
-        if (next == current) return
-        runtimeEffectiveMode = next
-        runtimeFallbackReason =
-            "Sustained renderer callback intervals exceeded the known ${"%.2f".format(knownSourceFps)} fps source budget; " +
-                "using ${next.label} instead of ${current.label}. This is not display FPS."
-        resetCpuSubmitWindows()
-        resetRendererMeasurementWindows()
-        performanceSampleWindowStartNs = System.nanoTime()
-        Log.w(
-            TAG,
-            "render_auto_fallback requested=${mode.id} from=${current.id} to=${next.id} " +
-                "source_fps=$knownSourceFps avg_renderer_interval_ms=$measuredRendererIntervalMs",
+        val next = runtimeRenderFallbackPolicy.observe(current, knownSourceFps, measuredRendererIntervalMs)
+        if (next != null && next != current) {
+            runtimeEffectiveMode = next
+            runtimeFallbackReason =
+                "Sustained renderer callback intervals exceeded the known ${"%.2f".format(knownSourceFps)} fps source budget; " +
+                    "using ${next.label} instead of ${current.label}. This is not display FPS."
+            native4kResolutionFallbackPolicy.reset()
+            resetCpuSubmitWindows()
+            resetRendererMeasurementWindows()
+            performanceSampleWindowStartNs = System.nanoTime()
+            Log.w(
+                TAG,
+                "render_auto_fallback requested=${mode.id} from=${current.id} to=${next.id} " +
+                    "source_fps=$knownSourceFps avg_renderer_interval_ms=$measuredRendererIntervalMs",
+            )
+            return
+        }
+
+        val reduceOutputResolution = native4kResolutionFallbackPolicy.observe(
+            native4kSurfaceVerified = native4kSurfaceVerified &&
+                requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K &&
+                surfaceSize == OutputResolutionPolicy.NATIVE_4K &&
+                eglSurfaceSize == OutputResolutionPolicy.NATIVE_4K &&
+                !native4kFallbackLatched,
+            currentMode = current,
+            sourceActive = true,
+            sourceVideoFps = knownSourceFps,
+            averageRendererIntervalMs = measuredRendererIntervalMs,
         )
+        if (reduceOutputResolution) {
+            val reason = "4K rendering remained over the known source cadence budget after processing fell back to bilinear; requesting a 1080P EGL buffer"
+            native4kFallbackLatched = true
+            native4kSurfaceVerified = false
+            native4kPerformanceValidationPolicy.reset()
+            native4kPerformanceValidatedForAuto = false
+            effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+            outputResolutionFallbackReason = reason
+            surfaceFallbackRequested = true
+            resetCpuSubmitWindows()
+            resetRendererMeasurementWindows()
+            performanceSampleWindowStartNs = System.nanoTime()
+            Log.w(TAG, "output_resolution_auto_fallback requested=${requestedOutputResolution.id} fallback_buffer=1080p effective=unverified source_fps=$knownSourceFps avg_renderer_interval_ms=$measuredRendererIntervalMs reason=$reason")
+        }
     }
 
     private inline fun measureCpuSubmit(window: CpuSubmitWindow, action: () -> Unit) {
@@ -922,6 +1155,8 @@ internal class FsrDemoRenderer(
         inputUpdateCpuSubmitWindow.drain()
         denoiseCpuSubmitWindow.drain()
         easuCpuSubmitWindow.drain()
+        easuStageCpuSubmitWindows.forEach { it.drain() }
+        linearFinalCpuSubmitWindow.drain()
         rcasCpuSubmitWindow.drain()
         presentCpuSubmitWindow.drain()
         latestCpuTimings = RenderCpuTimings(null, null, null, null, null, null)
@@ -942,6 +1177,10 @@ internal class FsrDemoRenderer(
             easu = easuCpuSubmitWindow.drain(),
             rcas = rcasCpuSubmitWindow.drain(),
             present = presentCpuSubmitWindow.drain(),
+            easuStages = easuStageSizes.indices.map { stageIndex ->
+                easuStageCpuSubmitWindows[stageIndex].drain()
+            },
+            linearFinalScale = linearFinalCpuSubmitWindow.drain(),
         )
         latestCpuTimings = timings
         performanceSampleWindowStartNs = nowNs
@@ -949,9 +1188,19 @@ internal class FsrDemoRenderer(
         fun CpuSubmitSummary?.field(): String = this?.let {
             "${"%.3f".format(it.averageMs)}/${"%.3f".format(it.maximumMs)}/${it.samples}"
         } ?: "N/A"
+        val easuPassTimings = timings.easuStages.mapIndexed { index, summary ->
+            "${index}=${summary.field()}"
+        }.joinToString(",").ifEmpty { "N/A" }
         Log.i(
             TAG,
             "performance_sample requested=${mode.id} effective=${effectiveMode.id} " +
+                "strategy_requested=${scalingStrategy.id} strategy_effective=${effectiveScalingStrategy.id} " +
+                "output_requested=${requestedOutputResolution.id} output_effective=${effectiveOutputResolution.id} " +
+                "surface_callback_size=$surfaceSize egl_surface_size=${eglSurfaceSize ?: "N/A"} " +
+                "source_size=$sourceSize processing_target=$targetSize " +
+                "easu_stages=${easuStageSizes.joinToString("→")} linear_final_scale=$linearFinalScale " +
+                "rgba_target_bytes_est=${snapshot().estimatedRgbaTextureBytes} " +
+                "rgba_shader_write_bytes_est=${currentScalingPlan?.estimatedRgbaWriteBytesPerFrame ?: 0L} " +
                 "source_fps=${sourceVideoFps?.let { "%.2f".format(it) } ?: "unknown"} " +
                 "surface_callback_fps=${surfaceTextureCallbackFps?.let { "%.2f".format(it) } ?: "N/A"} " +
                 "renderer_callback_fps=${"%.2f".format(rendererCallbackFps)} " +
@@ -961,6 +1210,8 @@ internal class FsrDemoRenderer(
                 "cpu_input_update_avg_ms=${timings.inputUpdate.field()} " +
                 "cpu_denoise_submit_avg_ms=${timings.denoise.field()} " +
                 "cpu_easu_submit_avg_ms=${timings.easu.field()} " +
+                "cpu_easu_pass_submit_avg_max_n_ms=$easuPassTimings " +
+                "cpu_linear_final_submit_avg_ms=${timings.linearFinalScale.field()} " +
                 "cpu_rcas_submit_avg_ms=${timings.rcas.field()} " +
                 "cpu_present_submit_avg_ms=${timings.present.field()} " +
                 "video_input_path=$videoInputPath gpu_timer_query=$gpuTimerQueryAvailable " +
@@ -1041,7 +1292,43 @@ internal class FsrDemoRenderer(
         drawPresent(texture, flipY)
     }
 
-    private fun drawEasuChain(firstInputTexture: Int, useExternalInput: Boolean = false) {
+    private fun drawScalingStrategy(firstInputTexture: Int, useExternalInput: Boolean = false) {
+        if (!linearFinalScale) {
+            measureCpuSubmit(easuCpuSubmitWindow) {
+                drawEasuChain(firstInputTexture, useExternalInput)
+            }
+            return
+        }
+
+        val finalScaleInput = if (easuStageSizes.isNotEmpty()) {
+            check(strategyBaseTexture != 0 && strategyBaseFramebuffer != 0) {
+                "Linear-final FSR strategy is missing its base-resolution target"
+            }
+            measureCpuSubmit(easuCpuSubmitWindow) {
+                drawEasuChain(
+                    firstInputTexture,
+                    useExternalInput,
+                    finalOutputTexture = strategyBaseTexture,
+                    finalOutputFramebuffer = strategyBaseFramebuffer,
+                )
+            }
+            strategyBaseTexture
+        } else {
+            firstInputTexture
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
+        GLES30.glViewport(0, 0, targetSize.width, targetSize.height)
+        measureCpuSubmit(linearFinalCpuSubmitWindow) {
+            drawPresent(finalScaleInput, flipY = easuStageSizes.isEmpty() && decodedVideoFrames == 0L)
+        }
+    }
+
+    private fun drawEasuChain(
+        firstInputTexture: Int,
+        useExternalInput: Boolean = false,
+        finalOutputTexture: Int = outputTexture,
+        finalOutputFramebuffer: Int = framebuffer,
+    ) {
         val stages = easuStageSizes
         check(stages.isNotEmpty()) { "No valid EASU stage for $sourceSize → $targetSize" }
         var inputTextureForStage = firstInputTexture
@@ -1050,21 +1337,28 @@ internal class FsrDemoRenderer(
             val stageSize = stages[index]
             val finalStage = index == stages.lastIndex
             val (destinationTexture, destinationFramebuffer) = when {
-                finalStage -> outputTexture to framebuffer
+                finalStage -> finalOutputTexture to finalOutputFramebuffer
                 index % 2 == 0 -> easuIntermediateTextureA to easuIntermediateFramebufferA
                 else -> easuIntermediateTextureB to easuIntermediateFramebufferB
             }
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, destinationFramebuffer)
             GLES30.glViewport(0, 0, stageSize.width, stageSize.height)
-            if (index == 0 && useExternalInput) {
-                drawEasuExternal(inputSize, stageSize)
-            } else {
-                drawEasu(
-                    inputTextureForStage,
-                    inputSize,
-                    stageSize,
-                    flipInputY = index == 0 && decodedVideoFrames == 0L,
-                )
+            val stageWindow = easuStageCpuSubmitWindows.getOrNull(index)
+            if (stageWindow == null) {
+                error = "EASU stage $index exceeds the per-pass telemetry capacity"
+                return
+            }
+            measureCpuSubmit(stageWindow) {
+                if (index == 0 && useExternalInput) {
+                    drawEasuExternal(inputSize, stageSize)
+                } else {
+                    drawEasu(
+                        inputTextureForStage,
+                        inputSize,
+                        stageSize,
+                        flipInputY = index == 0 && decodedVideoFrames == 0L,
+                    )
+                }
             }
             inputTextureForStage = destinationTexture
             inputSize = stageSize
@@ -1175,14 +1469,22 @@ internal class FsrDemoRenderer(
                     rcasFramebuffer = createFramebuffer(rcasTexture)
                 }
 
-                val intermediateSizes = RenderPolicy.easuIntermediateSizes(sourceSize, targetSize)
+                if (linearFinalScale && easuStageSizes.isNotEmpty()) {
+                    strategyBaseTexture = createEmptyTexture(strategyBaseTarget, GLES30.GL_LINEAR)
+                    strategyBaseFramebuffer = createFramebuffer(strategyBaseTexture)
+                }
+
+                val easuAllocationTarget = if (linearFinalScale) strategyBaseTarget else targetSize
+                val intermediateSizes = RenderPolicy.easuIntermediateSizes(sourceSize, easuAllocationTarget)
                 if (intermediateSizes.isNotEmpty()) {
                     easuIntermediateTextureA = createEmptyTexture(intermediateSizes[0], GLES30.GL_NEAREST)
                     easuIntermediateFramebufferA = createFramebuffer(easuIntermediateTextureA)
+                    easuIntermediateSizeA = intermediateSizes[0]
                 }
                 if (intermediateSizes.size > 1) {
                     easuIntermediateTextureB = createEmptyTexture(intermediateSizes[1], GLES30.GL_NEAREST)
                     easuIntermediateFramebufferB = createFramebuffer(easuIntermediateTextureB)
+                    easuIntermediateSizeB = intermediateSizes[1]
                 }
             }
             effectiveMode = when {
@@ -1207,13 +1509,105 @@ internal class FsrDemoRenderer(
         Log.e(TAG, allocationFallbackReason, failure)
     }
 
-    private fun updateEasuStagePlan(renderMode: RenderMode) {
-        easuStageSizes = if (renderMode.usesEasu && canUpscaleWithEasu()) {
-            RenderPolicy.easuStages(sourceSize, targetSize)
+    private fun createScalingPlan(
+        renderMode: RenderMode,
+        source: PixelSize,
+        geometry: VideoGeometry,
+    ): FsrScalingPlan {
+        fun plan(includeEasu: Boolean, includeRcas: Boolean) = FsrScalingPlanPolicy.create(
+            strategy = scalingStrategy,
+            source = source,
+            outputSurface = surfaceSize,
+            geometry = geometry,
+            aspectMode = aspectMode,
+            maxTextureSize = minOf(maxTextureSize, 4096),
+            includeNoiseReduction = renderMode.usesNoiseReduction && includeEasu,
+            includeEasu = includeEasu,
+            includeRcas = includeRcas && includeEasu,
+        )
+
+        val candidate = plan(includeEasu = renderMode.usesEasu, includeRcas = renderMode.usesRcas)
+        val canUpscale = source.width <= candidate.processingTarget.width &&
+            source.height <= candidate.processingTarget.height &&
+            (source.width < candidate.processingTarget.width || source.height < candidate.processingTarget.height)
+        return if (renderMode.usesEasu && !canUpscale) {
+            plan(includeEasu = false, includeRcas = false)
         } else {
-            emptyList()
+            candidate
         }
+    }
+
+    private fun applyScalingPlan(plan: FsrScalingPlan) {
+        effectiveScalingStrategy = plan.effectiveStrategy
+        targetSize = plan.processingTarget
+        strategyBaseTarget = plan.easuTarget
+        easuStageSizes = plan.easuStages
         easuStageCount = easuStageSizes.size
+        linearFinalScale = plan.linearFinalScale
+        currentScalingPlan = plan
+    }
+
+    private fun queryCurrentEglSurfaceSize(): PixelSize? = runCatching {
+        val display = EGL14.eglGetCurrentDisplay()
+        val surface = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
+        if (display == EGL14.EGL_NO_DISPLAY || surface == EGL14.EGL_NO_SURFACE) return null
+        val width = IntArray(1)
+        val height = IntArray(1)
+        check(EGL14.eglQuerySurface(display, surface, EGL14.EGL_WIDTH, width, 0)) {
+            "eglQuerySurface(EGL_WIDTH) failed"
+        }
+        check(EGL14.eglQuerySurface(display, surface, EGL14.EGL_HEIGHT, height, 0)) {
+            "eglQuerySurface(EGL_HEIGHT) failed"
+        }
+        PixelSize(width[0], height[0]).takeIf { it.width > 0 && it.height > 0 }
+    }.getOrNull()
+
+    private fun updateOutputResolutionValidation() {
+        val viewport = RenderPolicy.contentViewport(surfaceSize, videoGeometry, aspectMode)
+        val targetMatchesOutput = targetSize == PixelSize(viewport.width, viewport.height)
+        val fboComplete = !mode.usesEasu || (outputTexture != 0 && framebuffer != 0)
+        val reason = OutputResolutionPolicy.outputBufferFailureReason(
+            requestedSurfaceSize = requestedSurfaceBufferSize,
+            surfaceCallbackSize = surfaceSize,
+            eglSurfaceSize = eglSurfaceSize,
+            limits = GlesOutputLimits(maxTextureSize, maxRenderbufferSize, maxViewportSize),
+            processingTarget = targetSize,
+            processingTargetAtOutputResolution = targetMatchesOutput,
+            framebufferAllocationComplete = fboComplete,
+            rgbaTextureBytes = snapshot().estimatedRgbaTextureBytes,
+        )
+        if (reason != null) {
+            native4kSurfaceVerified = false
+            effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+            if (requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K) {
+                surfaceFallbackRequested = true
+                if (!native4kFallbackLatched) {
+                    native4kFallbackLatched = true
+                    outputResolutionFallbackReason = reason
+                    Log.w(TAG, "output_resolution_fallback requested=${requestedOutputResolution.id} fallback_buffer=1080p effective=unverified reason=$reason")
+                }
+            } else {
+                surfaceFallbackRequested = false
+                val previousReason = outputResolutionFallbackReason
+                val fallbackValidationDetail = "1080P fallback buffer is unverified: $reason"
+                outputResolutionFallbackReason = when {
+                    previousReason.isNullOrBlank() || previousReason == reason -> reason
+                    previousReason.contains(fallbackValidationDetail) -> previousReason
+                    else -> "$previousReason; $fallbackValidationDetail"
+                }
+                Log.w(TAG, "output_resolution_unverified requested=${requestedOutputResolution.id} buffer=$requestedSurfaceBufferSize reason=$reason")
+            }
+        } else {
+            native4kSurfaceVerified = requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K
+            effectiveOutputResolution = OutputResolutionPolicy.effectiveResolutionForBuffer(requestedSurfaceBufferSize, null)
+            surfaceFallbackRequested = false
+            if (native4kSurfaceVerified) outputResolutionFallbackReason = null
+            Log.i(
+                TAG,
+                "output_resolution_verified requested=${requestedOutputResolution.id} effective=${effectiveOutputResolution.id} " +
+                    "surface=$surfaceSize egl=$eglSurfaceSize target=$targetSize",
+            )
+        }
     }
 
     private fun canUpscaleWithEasu(): Boolean =
@@ -1284,24 +1678,30 @@ internal class FsrDemoRenderer(
             rcasFramebuffer,
             easuIntermediateFramebufferA,
             easuIntermediateFramebufferB,
+            strategyBaseFramebuffer,
         ).filter { it != 0 }.toIntArray()
         if (framebuffers.isNotEmpty()) GLES30.glDeleteFramebuffers(framebuffers.size, framebuffers, 0)
         framebuffer = 0
         rcasFramebuffer = 0
         easuIntermediateFramebufferA = 0
         easuIntermediateFramebufferB = 0
+        strategyBaseFramebuffer = 0
 
         val textures = intArrayOf(
             outputTexture,
             rcasTexture,
             easuIntermediateTextureA,
             easuIntermediateTextureB,
+            strategyBaseTexture,
         ).filter { it != 0 }.toIntArray()
         if (textures.isNotEmpty()) GLES30.glDeleteTextures(textures.size, textures, 0)
         outputTexture = 0
         rcasTexture = 0
         easuIntermediateTextureA = 0
         easuIntermediateTextureB = 0
+        strategyBaseTexture = 0
+        easuIntermediateSizeA = PixelSize(0, 0)
+        easuIntermediateSizeB = PixelSize(0, 0)
     }
 
     private fun releaseSourceTarget() {
@@ -1343,6 +1743,7 @@ internal class FsrDemoRenderer(
                 totalVideoFrameCallbacks.incrementAndGet()
                 pendingVideoFrameCallbacks.incrementAndGet()
                 frameAvailable = true
+                if (frameRenderRequestGate.markFramePending()) requestRender()
             },
             Handler(Looper.getMainLooper()),
         )
@@ -1370,19 +1771,33 @@ internal class FsrDemoRenderer(
         check(sourceFramebuffer != 0 && inputTexture != 0 && framebuffer != 0) {
             "EASU comparison render targets are unavailable"
         }
-        drawEasuChain(inputTexture, useExternalInput = true)
-        val directOutput = readEasuOutputPixels()
+        check(easuStageSizes.isNotEmpty()) { "EASU comparison requires at least one EASU stage" }
+        val comparisonSize = if (linearFinalScale) strategyBaseTarget else targetSize
+        val comparisonTexture = if (linearFinalScale) strategyBaseTexture else outputTexture
+        val comparisonFramebuffer = if (linearFinalScale) strategyBaseFramebuffer else framebuffer
+        drawEasuChain(
+            inputTexture,
+            useExternalInput = true,
+            finalOutputTexture = comparisonTexture,
+            finalOutputFramebuffer = comparisonFramebuffer,
+        )
+        val directOutput = readEasuOutputPixels(comparisonSize, comparisonFramebuffer)
         copyExternalVideoToRgba()
-        drawEasuChain(inputTexture, useExternalInput = false)
-        val rgbaCopyOutput = readEasuOutputPixels()
+        drawEasuChain(
+            inputTexture,
+            useExternalInput = false,
+            finalOutputTexture = comparisonTexture,
+            finalOutputFramebuffer = comparisonFramebuffer,
+        )
+        val rgbaCopyOutput = readEasuOutputPixels(comparisonSize, comparisonFramebuffer)
         return EasuQualityComparison.compare(rgbaCopyOutput, directOutput)
     }
 
-    private fun readEasuOutputPixels(): ByteArray {
-        val byteCount = targetSize.width * targetSize.height * 4
+    private fun readEasuOutputPixels(size: PixelSize, destinationFramebuffer: Int): ByteArray {
+        val byteCount = size.width * size.height * 4
         val pixels = ByteBuffer.allocateDirect(byteCount).order(ByteOrder.nativeOrder())
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebuffer)
-        GLES30.glReadPixels(0, 0, targetSize.width, targetSize.height, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, pixels)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, destinationFramebuffer)
+        GLES30.glReadPixels(0, 0, size.width, size.height, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, pixels)
         checkNoGlError("debug EASU output comparison readback")
         val output = ByteArray(byteCount)
         pixels.position(0)
