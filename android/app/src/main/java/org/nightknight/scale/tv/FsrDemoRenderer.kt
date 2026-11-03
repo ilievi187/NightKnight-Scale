@@ -99,6 +99,16 @@ internal class FsrDemoRenderer(
         val textureTransform: Int,
     )
 
+    private data class RenderPlanRequestKey(
+        val source: PixelSize,
+        val geometry: VideoGeometry,
+        val surface: PixelSize,
+        val mode: RenderMode,
+        val strategy: FsrComparisonStrategy,
+        val aspectMode: AspectRatioMode,
+        val maxTextureSize: Int,
+    )
+
     private companion object {
         const val TAG = "NKScaleTV"
         const val GL_TIME_ELAPSED_EXT = 0x88BF
@@ -108,7 +118,10 @@ internal class FsrDemoRenderer(
     }
 
     @Volatile
-    var mode = RenderMode.FSR1
+    var requestedMode = RenderMode.FSR1
+
+    @Volatile
+    private var mode = RenderMode.FSR1
 
     @Volatile
     var sharpnessProgress = 8
@@ -184,6 +197,8 @@ internal class FsrDemoRenderer(
 
     @Volatile
     private var currentScalingPlan: FsrScalingPlan? = null
+
+    private var appliedPlanRequestKey: RenderPlanRequestKey? = null
 
     @Volatile
     private var strategyBaseTarget = PixelSize(0, 0)
@@ -411,7 +426,7 @@ internal class FsrDemoRenderer(
         gpuTimerQueryAvailable = gpuTimerQueryAvailable,
         displayPresentationTimingAvailable = false,
         error = error,
-        mode = mode,
+        mode = requestedMode,
         effectiveMode = effectiveMode,
         allocationFallbackReason = allocationFallbackReason,
         qualityFallbackReason = qualityFallbackReason,
@@ -513,6 +528,7 @@ internal class FsrDemoRenderer(
         easuIntermediateSizeB = PixelSize(0, 0)
         strategyBaseTarget = PixelSize(0, 0)
         currentScalingPlan = null
+        appliedPlanRequestKey = null
         resetNative4kPerformanceValidation()
         native4kSurfaceVerified = false
         effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
@@ -651,6 +667,10 @@ internal class FsrDemoRenderer(
         if (width <= 0 || height <= 0) return
         surfaceChangeCount += 1L
         surfaceSize = PixelSize(width, height)
+        val previousMode = mode
+        mode = requestedMode
+        if (mode != previousMode) resetModeTransitionState()
+        appliedPlanRequestKey = null
         eglSurfaceSize = queryCurrentEglSurfaceSize()
         // Avoid allocating an unbounded multi-4K intermediate on unusually large displays.
         targetSize = RenderPolicy.targetFor(surfaceSize, minOf(maxTextureSize, 4096))
@@ -668,7 +688,10 @@ internal class FsrDemoRenderer(
             videoGeometry = VideoGeometry.fromSize(sourceSize)
         }
         val renderMode = availableModeFor(mode)
+        val nativePlannerCallsBeforePlan = NativeEasuStagePlanner.nativePlannerCalls
         applyScalingPlan(createScalingPlan(renderMode, sourceSize, videoGeometry))
+        val nativePlannerPlanCalls = NativeEasuStagePlanner.nativePlannerCalls - nativePlannerCallsBeforePlan
+        val nativePlannerRuntimePlan = resolveNativePlannerRuntimePlan(currentScalingPlan, nativePlannerPlanCalls)
         if (targetSize.width <= 0 || targetSize.height <= 0) {
             error = "The decoded video size cannot be processed by the GLES renderer."
             return
@@ -691,7 +714,21 @@ internal class FsrDemoRenderer(
         resetCpuSubmitWindows()
         resetRendererMeasurementWindows()
         performanceSampleWindowStartNs = System.nanoTime()
-        Log.i(TAG, "surface=$surfaceSize source=${sourceSize} target=${targetSize} strategy_requested=${scalingStrategy.id} strategy_effective=${effectiveScalingStrategy.id} strategy_fallback=${currentScalingPlan?.strategyFallbackReason ?: "none"} easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale pass_outputs=${currentScalingPlan?.passOutputSizes.orEmpty().joinToString("→")} rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()} video=${source.assetPath}")
+        Log.i(
+            TAG,
+            "surface=$surfaceSize source=${sourceSize} target=${targetSize} requested_buffer=$requestedSurfaceBufferSize " +
+                "strategy_requested=${scalingStrategy.id} strategy_effective=${effectiveScalingStrategy.id} " +
+                "strategy_fallback=${currentScalingPlan?.strategyFallbackReason ?: "none"} " +
+                "easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale " +
+                "native_planner=${NativeEasuStagePlanner.status} " +
+                "native_planner_runtime_plan=$nativePlannerRuntimePlan " +
+                "native_planner_plan_calls=$nativePlannerPlanCalls " +
+                "native_planner_calls=${NativeEasuStagePlanner.nativePlannerCalls} " +
+                "native_planner_last_call_us=${NativeEasuStagePlanner.lastNativePlannerCallMicros} " +
+                "pass_outputs=${currentScalingPlan?.passOutputSizes.orEmpty().joinToString("→")} " +
+                "rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} " +
+                "rcas_output=${rcasOutputLabel()} video=${source.assetPath}",
+        )
         requestRender()
     }
 
@@ -710,8 +747,11 @@ internal class FsrDemoRenderer(
         runtimeEffectiveMode = null
         runtimeFallbackReason = null
         resetNative4kPerformanceValidation()
+        val nativePlannerCallsBeforePlan = NativeEasuStagePlanner.nativePlannerCalls
+        var appliedPlan: FsrScalingPlan? = null
         if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
             val plan = createScalingPlan(availableModeFor(mode), sourceSize, videoGeometry)
+            appliedPlan = plan
             applyScalingPlan(plan)
             runCatching { createOrReplaceTargets() }
                 .onFailure { failure ->
@@ -723,7 +763,15 @@ internal class FsrDemoRenderer(
         resetCpuSubmitWindows()
         resetRendererMeasurementWindows()
         performanceSampleWindowStartNs = System.nanoTime()
-        Log.i(TAG, "scaling_strategy requested=${strategy.id} effective=${effectiveScalingStrategy.id} target=$targetSize easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes}")
+        val nativePlannerPlanCalls = NativeEasuStagePlanner.nativePlannerCalls - nativePlannerCallsBeforePlan
+        val nativePlannerRuntimePlan = resolveNativePlannerRuntimePlan(appliedPlan, nativePlannerPlanCalls)
+        Log.i(
+            TAG,
+            "scaling_strategy requested=${strategy.id} effective=${effectiveScalingStrategy.id} " +
+                "target=$targetSize easu_stages=${easuStageSizes.joinToString("→")} linear_final=$linearFinalScale " +
+                "native_planner_runtime_plan=$nativePlannerRuntimePlan native_planner_plan_calls=$nativePlannerPlanCalls " +
+                "rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes}",
+        )
     }
 
     /** Called only on the GL thread after the decoder reports its actual input dimensions. */
@@ -737,8 +785,13 @@ internal class FsrDemoRenderer(
     fun updateDecodedVideoGeometry(geometry: VideoGeometry) {
         if (geometry.codedWidth <= 0 || geometry.codedHeight <= 0 || surfaceSize.width <= 0 || surfaceSize.height <= 0) return
         val newSourceSize = geometry.orientedSize
+        val requestKey = renderPlanRequestKey(newSourceSize, geometry)
+        if (requestKey == appliedPlanRequestKey) return
         val renderMode = availableModeFor(mode)
+        val nativePlannerCallsBeforePlan = NativeEasuStagePlanner.nativePlannerCalls
         val newPlan = createScalingPlan(renderMode, newSourceSize, geometry)
+        val nativePlannerPlanCalls = NativeEasuStagePlanner.nativePlannerCalls - nativePlannerCallsBeforePlan
+        val nativePlannerRuntimePlan = resolveNativePlannerRuntimePlan(newPlan, nativePlannerPlanCalls)
         val newTargetSize = newPlan.processingTarget
         if (newTargetSize.width <= 0 || newTargetSize.height <= 0) {
             error = "The decoded video size cannot be processed by the GLES renderer."
@@ -746,7 +799,10 @@ internal class FsrDemoRenderer(
         }
         if (geometry == videoGeometry && newSourceSize == sourceSize && newTargetSize == targetSize &&
             newPlan.easuStages == easuStageSizes && newPlan.linearFinalScale == linearFinalScale
-        ) return
+        ) {
+            appliedPlanRequestKey = requestKey
+            return
+        }
 
         externalEasuValidated = false
         externalEasuRejected = false
@@ -765,7 +821,7 @@ internal class FsrDemoRenderer(
         resetCpuSubmitWindows()
         resetRendererMeasurementWindows()
         performanceSampleWindowStartNs = System.nanoTime()
-        Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize easu_stages=$easuStageCount rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()}")
+        Log.i(TAG, "decoded_size=$sourceSize target=$targetSize surface=$surfaceSize easu_stages=$easuStageCount native_planner_runtime_plan=$nativePlannerRuntimePlan native_planner_plan_calls=$nativePlannerPlanCalls rgba_texture_bytes=${snapshot().estimatedRgbaTextureBytes} rcas_output=${rcasOutputLabel()}")
     }
 
     private fun recordFrameInterval(frameStartNs: Long): Boolean {
@@ -805,19 +861,42 @@ internal class FsrDemoRenderer(
         rendererCallbackFps = 0.0f
     }
 
-    private fun applyRequestedMode() {
-        val requested = mode
-        if (requested == lastModeOnGlThread) return
+    /** Apply the latest volatile UI request on the GL queue before the next dirty draw. */
+    fun applyRequestedModeOnGlThread() {
+        val requested = requestedMode
+        if (requested == mode) return
+        mode = requested
+        resetNative4kPerformanceValidation()
+        applyRequestedMode()
+    }
+
+    private fun resolveNativePlannerRuntimePlan(plan: FsrScalingPlan?, nativePlannerPlanCalls: Long): String = when {
+        plan == null -> "not-ready"
+        plan.easuStages.isEmpty() -> "not-required"
+        nativePlannerPlanCalls > 0L && NativeEasuStagePlanner.status == "Rust EASU stage planner" -> "rust"
+        else -> "kotlin-fallback"
+    }
+
+    private fun resetModeTransitionState() {
         runtimeRenderFallbackPolicy.reset()
         runtimeEffectiveMode = null
         runtimeFallbackReason = null
         lastFallbackSourceFps = sourceVideoFps
+    }
+
+    private fun applyRequestedMode() {
+        val requested = mode
+        if (requested == lastModeOnGlThread) return
+        resetModeTransitionState()
         val resourceMode = availableModeFor(requested)
+        val nativePlannerCallsBeforePlan = NativeEasuStagePlanner.nativePlannerCalls
+        var appliedPlan: FsrScalingPlan? = null
         if (surfaceSize.width > 0 && sourceSize.width > 0 && maxTextureSize > 0) {
             val nextPlan = createScalingPlan(resourceMode, sourceSize, videoGeometry)
             val nextTarget = nextPlan.processingTarget
             if (nextTarget.width > 0 && nextTarget.height > 0) {
                 applyScalingPlan(nextPlan)
+                appliedPlan = nextPlan
                 createOrReplaceTargets()
                 updateOutputResolutionValidation()
             }
@@ -830,7 +909,14 @@ internal class FsrDemoRenderer(
         resetCpuSubmitWindows()
         resetRendererMeasurementWindows()
         performanceSampleWindowStartNs = System.nanoTime()
-        Log.i(TAG, "render_resources mode=${requested.id} effective=${effectiveMode.id} rgba_bytes=${snapshot().estimatedRgbaTextureBytes}")
+        val nativePlannerPlanCalls = NativeEasuStagePlanner.nativePlannerCalls - nativePlannerCallsBeforePlan
+        val runtimePlan = resolveNativePlannerRuntimePlan(appliedPlan, nativePlannerPlanCalls)
+        Log.i(
+            TAG,
+            "render_resources mode=${requested.id} effective=${effectiveMode.id} " +
+                "native_planner_runtime_plan=$runtimePlan native_planner_plan_calls=$nativePlannerPlanCalls " +
+                "rgba_bytes=${snapshot().estimatedRgbaTextureBytes}",
+        )
     }
 
     private fun pollGpuTimerQuery() {
@@ -895,7 +981,6 @@ internal class FsrDemoRenderer(
         frameRenderRequestGate.onRenderStarted()
         val frameStartNs = System.nanoTime()
         val intervalWindowCompleted = recordFrameInterval(frameStartNs)
-        applyRequestedMode()
         maybeLogPerformanceSample(frameStartNs)
         val recentSourceFrameActivity = VideoActivityPolicy.hasRecentFrameCallback(
             lastCallbackNs = lastVideoFrameCallbackNs.get(),
@@ -1474,8 +1559,7 @@ internal class FsrDemoRenderer(
                     strategyBaseFramebuffer = createFramebuffer(strategyBaseTexture)
                 }
 
-                val easuAllocationTarget = if (linearFinalScale) strategyBaseTarget else targetSize
-                val intermediateSizes = RenderPolicy.easuIntermediateSizes(sourceSize, easuAllocationTarget)
+                val intermediateSizes = RenderPolicy.easuIntermediateSizesForStages(easuStageSizes)
                 if (intermediateSizes.isNotEmpty()) {
                     easuIntermediateTextureA = createEmptyTexture(intermediateSizes[0], GLES30.GL_NEAREST)
                     easuIntermediateFramebufferA = createFramebuffer(easuIntermediateTextureA)
@@ -1545,7 +1629,18 @@ internal class FsrDemoRenderer(
         easuStageCount = easuStageSizes.size
         linearFinalScale = plan.linearFinalScale
         currentScalingPlan = plan
+        appliedPlanRequestKey = renderPlanRequestKey(sourceSize, videoGeometry)
     }
+
+    private fun renderPlanRequestKey(source: PixelSize, geometry: VideoGeometry) = RenderPlanRequestKey(
+        source = source,
+        geometry = geometry,
+        surface = surfaceSize,
+        mode = mode,
+        strategy = scalingStrategy,
+        aspectMode = aspectMode,
+        maxTextureSize = maxTextureSize,
+    )
 
     private fun queryCurrentEglSurfaceSize(): PixelSize? = runCatching {
         val display = EGL14.eglGetCurrentDisplay()

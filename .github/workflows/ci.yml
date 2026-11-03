@@ -16,9 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy --no-self-update
       - name: Install native build dependencies
         run: |
           sudo apt-get update
@@ -38,6 +37,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install pinned Rust Android toolchain
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt,clippy --target aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android --no-self-update
       - name: Validate GLES shader variants when glslang is available
         run: |
           if ! command -v glslangValidator >/dev/null 2>&1; then
@@ -56,8 +57,8 @@ jobs:
         uses: android-actions/setup-android@v4
         with:
           packages: ''
-      - name: Install Android platform and build tools
-        run: sdkmanager "platforms;android-36" "build-tools;35.0.0"
+      - name: Install Android platform, build tools, and pinned NDK
+        run: sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.2.12479018"
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -65,6 +66,8 @@ jobs:
           cache-provider: basic
       - name: Run Android unit tests and assemble debug APK
         run: gradle -p android --no-daemon --max-workers=2 testDebugUnitTest assembleDebug
+      - name: Verify packaged Rust Android ABIs
+        run: python3 scripts/verify_rust_apk.py android/app/build/outputs/apk/debug/app-debug.apk
       - name: Print debug APK SHA-256
         run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk
       - name: Upload debug APK for manual TV testing

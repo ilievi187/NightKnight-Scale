@@ -126,6 +126,7 @@ internal object FsrScalingPlanPolicy {
             aspectMode = aspectMode,
             includeNoiseReduction = includeNoiseReduction,
             includeEasu = stages.isNotEmpty(),
+            stages = stages,
             includeLinearFinal = linearFinal,
             includeRcas = includeRcas && (stages.isNotEmpty() || linearFinal),
         )
@@ -156,6 +157,7 @@ internal object FsrScalingPlanPolicy {
         aspectMode: AspectRatioMode,
         includeNoiseReduction: Boolean,
         includeEasu: Boolean,
+        stages: List<PixelSize>,
         includeLinearFinal: Boolean,
         includeRcas: Boolean,
     ): Long {
@@ -164,7 +166,7 @@ internal object FsrScalingPlanPolicy {
         if (includeEasu) {
             val stageOutput = if (includeLinearFinal) easuTarget else processingTarget
             total += bytes(stageOutput)
-            total += RenderPolicy.easuIntermediateSizes(source, easuTarget).sumOf(::bytes)
+            total += RenderPolicy.easuIntermediateSizesForStages(stages).sumOf(::bytes)
         }
         if (includeLinearFinal) total += bytes(processingTarget)
         if (includeRcas && RenderPolicy.requiresRcasIntermediate(processingTarget, outputSurface, geometry, aspectMode)) {

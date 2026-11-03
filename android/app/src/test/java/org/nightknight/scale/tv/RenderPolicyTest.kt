@@ -117,6 +117,16 @@ class RenderPolicyTest {
     }
 
     @Test
+    fun pingPongBuffersCanBeDerivedFromTheAlreadyPlannedEasuStages() {
+        assertEquals(
+            listOf(PixelSize(960, 540), PixelSize(1920, 1080)),
+            RenderPolicy.easuIntermediateSizesForStages(
+                listOf(PixelSize(960, 540), PixelSize(1920, 1080), PixelSize(3840, 2160)),
+            ),
+        )
+    }
+
+    @Test
     fun rcasCanRenderDirectlyIntoAspectFitViewportUnlessTargetWasBudgetReduced() {
         assertEquals(
             false,

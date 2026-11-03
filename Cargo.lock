@@ -1833,6 +1833,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nightknight-render-core"
+version = "0.1.0"
+dependencies = [
+ "jni",
+]
+
+[[package]]
 name = "nkscale-core"
 version = "0.1.0"
 dependencies = [

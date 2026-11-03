@@ -20,11 +20,15 @@ The bundled clips are synthetic test-pattern video, not television/IPTV content.
 
 ## Build
 
-Requirements: JDK 17, Gradle 8.13, Android SDK Platform 36 and Android SDK Build Tools 35 or newer. From this directory:
+Requirements: JDK 17, Gradle 8.13, Android SDK Platform 36, Android SDK Build Tools 35 or newer, Rust/Cargo `1.99.0` (pinned by the repository `rust-toolchain.toml`), and Android NDK `27.2.12479018`. The crate MSRV remains Rust 1.95. The Gradle build compiles and packages the Rust library for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` using Rust targets `aarch64-linux-android`, `armv7-linux-androideabi`, `i686-linux-android`, and `x86_64-linux-android`; install these targets with rustup. From this directory:
 
 ```sh
 gradle testDebugUnitTest assembleDebug
 ```
+
+Gradle's `preBuild` task invokes `android/scripts/build-rust-native.sh` and places generated `.so` files in the build-generated `jniLibs` directory. Do not copy native libraries into the source tree by hand. From this `android/` directory, run `python3 ../scripts/verify_rust_apk.py app/build/outputs/apk/debug/app-debug.apk` to verify the ELF class and machine for every configured ABI.
+
+The Rust `nightknight-render-core` is currently a narrow EASU stage planner, not a Rust GLES renderer. Kotlin retains shader/program and texture/FBO ownership, `SurfaceTexture`, Android lifecycle, and all GLES calls on the existing `GLSurfaceView` thread. JNI returns all stage sizes in one primitive array and is invoked once for an EASU render-plan build. The UI publishes a separate volatile `requestedMode`; the active mode remains GL-thread-owned until the coalesced queue event rebuilds its plan/resources. If `onSurfaceChanged` adopts the request first, it also resets transition fallback state before replanning. Rapid preset changes collapse to the latest request. The steady-state `onDrawFrame` callback does not build plans or call the planner. JNI is not called per pass or pixel. Missing or invalid native output falls back to the Kotlin reference planner, and Diagnostics reports the selected path and JNI planning-call CPU wall time. The emulator smoke checks the runtime plan and exact JNI-call count on each preset/strategy path, scopes the native-4K probe to its freshly cleared C-strategy Logcat, and matches the same plan record to the verified output buffer: 4K requires the C strategy/linear-final pass; 1080p fallback requires effective strategy A and no linear-final pass. Every matching C surface-plan record must prove one JNI call. Initial planner/surface evidence is saved before later Logcat resets. This migration milestone makes no GPU-throughput or PowerVR performance claim.
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. No APK is checked into the Git repository. PR CI runs Android JVM tests, builds the APK, installs it on an API 36 Android TV emulator, and uploads both APK and smoke evidence as seven-day artifacts. CI/SwiftShader results are emulator-only; they do not establish TCL decoder/GPU performance or visual quality. Use the TCL checklist in [`../docs/tcl-55c645-test-checklist.md`](../docs/tcl-55c645-test-checklist.md) for the first physical-device run.
 

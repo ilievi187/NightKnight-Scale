@@ -193,13 +193,20 @@ internal object RenderPolicy {
     }
 
     /** Generate an EASU chain with no stage exceeding 2× per axis. */
-    fun easuStages(source: PixelSize, target: PixelSize): List<PixelSize> {
+    fun easuStages(source: PixelSize, target: PixelSize): List<PixelSize> =
+        NativeEasuStagePlanner.easuStages(source, target)
+
+    /** Reference policy retained as a safe fallback and parity-test oracle for the Rust planner. */
+    internal fun easuStagesFallback(source: PixelSize, target: PixelSize): List<PixelSize> {
         if (source.width <= 0 || source.height <= 0 || target.width <= 0 || target.height <= 0) return emptyList()
         if (target.width < source.width || target.height < source.height) return listOf(target)
         val stages = mutableListOf<PixelSize>()
         var current = source
         while (current != target) {
-            val next = PixelSize(minOf(target.width, current.width * 2), minOf(target.height, current.height * 2))
+            val next = PixelSize(
+                minOf(target.width.toLong(), current.width.toLong() * 2L).toInt(),
+                minOf(target.height.toLong(), current.height.toLong() * 2L).toInt(),
+            )
             if (next == current) return emptyList()
             stages += next
             current = next
@@ -208,9 +215,13 @@ internal object RenderPolicy {
     }
 
     /** Maximum dimensions needed by the two reusable ping-pong texture slots. */
-    fun easuIntermediateSizes(source: PixelSize, target: PixelSize): List<PixelSize> {
+    fun easuIntermediateSizes(source: PixelSize, target: PixelSize): List<PixelSize> =
+        easuIntermediateSizesForStages(easuStagesFallback(source, target))
+
+    /** Derive reusable buffers from the already-selected stage chain without replanning via JNI. */
+    fun easuIntermediateSizesForStages(stages: List<PixelSize>): List<PixelSize> {
         val slots = arrayOfNulls<PixelSize>(2)
-        easuStages(source, target).dropLast(1).forEachIndexed { index, stage ->
+        stages.dropLast(1).forEachIndexed { index, stage ->
             val slot = index % slots.size
             val current = slots[slot]
             slots[slot] = if (current == null) {

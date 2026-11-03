@@ -13,7 +13,7 @@ if [[ ! "$target_device" =~ ^emulator-[0-9]+$ ]]; then
     exit 2
 fi
 export ANDROID_SERIAL="$target_device"
-trap 'adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat.txt" 2>/dev/null || true' EXIT
+trap 'adb logcat -d -s NKScaleTV:V AndroidRuntime:E > "$output_dir/logcat-on-exit.txt" 2>/dev/null || true' EXIT
 adb wait-for-device
 if [[ "$(adb get-serialno)" != "$target_device" ]]; then
     echo "ADB did not select the requested emulator serial: $target_device" >&2
@@ -38,7 +38,7 @@ adb shell wm size 1920x1080 >/dev/null
 adb shell wm density 400 >/dev/null
 adb logcat -c
 adb shell am force-stop "$package_name"
-adb shell am start -W -n "$activity_name"
+adb shell am start -W -n "$activity_name" --ez nkscale_validate_native_planner true
 
 wait_for_log_marker() {
     marker="$1"
@@ -73,12 +73,118 @@ wait_for_log_occurrences() {
     exit 1
 }
 
+wait_for_exact_plan_record_occurrences() {
+    local pattern="$1"
+    local expected="$2"
+    local description="$3"
+    for attempt in $(seq 1 90); do
+        local log_output
+        log_output="$(adb logcat -d -s NKScaleTV:I)"
+        local occurrences
+        occurrences="$(grep -Ec "$pattern" <<< "$log_output" || true)"
+        if [ "${occurrences:-0}" -eq "$expected" ]; then
+            return 0
+        fi
+        if [ "${occurrences:-0}" -gt "$expected" ]; then
+            echo "Observed $occurrences plan records; expected exactly $expected: $description ($pattern)" >&2
+            adb logcat -d -s NKScaleTV:V AndroidRuntime:E >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo "Timed out waiting for exactly $expected plan records: $description ($pattern)" >&2
+    adb logcat -d -s NKScaleTV:V AndroidRuntime:E >&2
+    exit 1
+}
+
+wait_for_plan_record_minimum() {
+    local pattern="$1"
+    local minimum="$2"
+    local description="$3"
+    for attempt in $(seq 1 90); do
+        local log_output
+        log_output="$(adb logcat -d -s NKScaleTV:I)"
+        local occurrences
+        occurrences="$(grep -Ec "$pattern" <<< "$log_output" || true)"
+        if [ "${occurrences:-0}" -ge "$minimum" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "Timed out waiting for at least $minimum plan records: $description ($pattern)" >&2
+    adb logcat -d -s NKScaleTV:V AndroidRuntime:E >&2
+    exit 1
+}
+
+assert_surface_plan_calls_once() {
+    local log_output="$1"
+    local record_pattern="$2"
+    local description="$3"
+    local records invalid_records
+    records="$(grep -E "$record_pattern" <<< "$log_output" || true)"
+    if [[ -z "$records" ]]; then
+        echo "No surface plan record matched: $description" >&2
+        printf '%s\n' "$log_output" >&2
+        exit 1
+    fi
+    invalid_records="$(grep -Ev 'native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)' <<< "$records" || true)"
+    if [[ -n "$invalid_records" ]]; then
+        echo "Every matching surface plan must use exactly one Rust planner call: $description" >&2
+        printf '%s\n' "$invalid_records" >&2
+        exit 1
+    fi
+}
+
+assert_c_surface_plan_calls_once() {
+    assert_surface_plan_calls_once \
+        "$1" \
+        'surface=.*strategy_requested=c_easu_1080_linear_2160 .*native_planner_runtime_plan=' \
+        'requested native-4K C strategy'
+}
+
+assert_c_surface_plan_matches_output() {
+    local log_output="$1"
+    local expected_size="$2"
+    local expected_effective_strategy="$3"
+    local require_linear_final="$4"
+    local expected_requested_buffer="$5"
+    local pattern="surface=${expected_size} .*target=${expected_size} "
+    if [[ -n "$expected_requested_buffer" ]]; then
+        pattern+="requested_buffer=${expected_requested_buffer} "
+    else
+        pattern+="requested_buffer=(3840×2160|1920×1080) "
+    fi
+    pattern+="strategy_requested=c_easu_1080_linear_2160 strategy_effective=${expected_effective_strategy} "
+    case "$require_linear_final" in
+        true) pattern+=".*linear_final=true " ;;
+        false) pattern+=".*linear_final=false " ;;
+        *) echo "Invalid linear-final expectation: $require_linear_final" >&2; exit 2 ;;
+    esac
+    pattern+="native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)"
+    if ! grep -Eq "$pattern" <<< "$log_output"; then
+        echo "C plan record did not match the effective output buffer $expected_size" >&2
+        printf '%s\n' "$log_output" >&2
+        exit 1
+    fi
+}
+
 press_preset() {
     local preset_id="$1"
     local description="$2"
     local sample_mode="${3:-}"
     local marker="preset=${preset_id} "
+    local plan_mode expected_plan expected_calls plan_pattern current_plan_count expected_plan_count
     local current_count expected_count sample_marker sample_count expected_sample_count
+    case "$preset_id" in
+        quality) plan_mode="fsr1_denoise"; expected_plan="rust"; expected_calls=1 ;;
+        balanced) plan_mode="fsr1"; expected_plan="rust"; expected_calls=1 ;;
+        performance) plan_mode="easu_only"; expected_plan="rust"; expected_calls=1 ;;
+        off) plan_mode="bilinear"; expected_plan="not-required"; expected_calls=0 ;;
+        *) echo "Unknown preset id for plan validation: $preset_id" >&2; exit 1 ;;
+    esac
+    plan_pattern="render_resources mode=${plan_mode} .*native_planner_runtime_plan=${expected_plan} native_planner_plan_calls=${expected_calls}([[:space:]]|$)"
+    current_plan_count="$(adb logcat -d -s NKScaleTV:I | grep -Ec "$plan_pattern" || true)"
+    expected_plan_count=$(( ${current_plan_count:-0} + 1 ))
     current_count="$(adb logcat -d -s NKScaleTV:I | grep -Fc "$marker" || true)"
     expected_count=$(( ${current_count:-0} + 1 ))
     if [[ -n "$sample_mode" ]]; then
@@ -88,6 +194,7 @@ press_preset() {
     fi
     adb shell input keyevent KEYCODE_DPAD_CENTER
     wait_for_log_occurrences "$marker" "$expected_count" "$description"
+    wait_for_exact_plan_record_occurrences "$plan_pattern" "$expected_plan_count" "${description} plan selection"
     if [[ -n "$sample_mode" ]]; then
         wait_for_log_occurrences "$sample_marker" "$expected_sample_count" "settled ${sample_mode} CPU/renderer sample"
     fi
@@ -136,6 +243,10 @@ assert_native4k_linear_final_strategy() {
     wait_for_log_marker 'output_resolution_request requested=native_4k requested_buffer=3840×2160' 'native-4K buffer request' 30
     wait_for_log_marker 'video=playing source=test-videos/scale-test-720x576-16x9-25fps.mp4' '576p 16:9 anamorphic benchmark clip' 45
     wait_for_log_marker 'video_frame=consumed' 'decoded 576p benchmark frame' 45
+    # Logcat was cleared above; wait for a C-strategy surface record, then validate every such record below.
+    wait_for_plan_record_minimum \
+        'surface=.*strategy_requested=c_easu_1080_linear_2160' \
+        1 'native-4K C surface plan'
 
     local verified=0
     for attempt in $(seq 1 90); do
@@ -153,10 +264,11 @@ assert_native4k_linear_final_strategy() {
 
     local log_output
     log_output="$(adb logcat -d -s NKScaleTV:V)"
+    assert_c_surface_plan_calls_once "$log_output"
     if [ "$verified" -eq 1 ]; then
-        if ! grep -Fq 'strategy_requested=c_easu_1080_linear_2160 strategy_effective=c_easu_1080_linear_2160' <<< "$log_output" || \
-           ! grep -Fq 'linear_final=true' <<< "$log_output" || \
-           ! grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160' <<< "$log_output"; then
+        assert_c_surface_plan_matches_output \
+            "$log_output" "3840×2160" "c_easu_1080_linear_2160" true "3840×2160"
+        if ! grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160' <<< "$log_output"; then
             echo "4K output was verified, but the C strategy/FBO dimensions were not confirmed" >&2
             printf '%s\n' "$log_output" >&2
             exit 1
@@ -174,6 +286,9 @@ assert_native4k_linear_final_strategy() {
             exit 1
         fi
         wait_for_log_marker 'output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080' 'validated effective 1080p fallback buffer' 45
+        log_output="$(adb logcat -d -s NKScaleTV:V)"
+        assert_c_surface_plan_matches_output \
+            "$log_output" "1920×1080" "a_1080p_system_scaler" false ""
         echo "Emulator-only: native-4K request safely fell back with a visible reason; no native-4K success is claimed."
     fi
     wait_for_log_marker 'performance_sample requested=fsr1 ' 'native-4K strategy performance window' 90
@@ -206,6 +321,9 @@ assert_diagnostics_reachable_at_1080p() {
     adb shell input keyevent KEYCODE_DPAD_CENTER
     wait_for_log_marker 'scaling_strategy_selected=a_1080p_system_scaler' 'D-pad strategy selector activation' 15
     wait_for_log_marker 'scaling_strategy requested=a_1080p_system_scaler effective=a_1080p_system_scaler' 'renderer reconfiguration for strategy A' 15
+    wait_for_exact_plan_record_occurrences \
+        'scaling_strategy requested=a_1080p_system_scaler .*native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)' \
+        1 'strategy A plan uses one batched Rust JNI call'
 
     # Restore the AVD's default density before pixel-comparison playback tests.
     adb shell am force-stop "$package_name"
@@ -216,6 +334,13 @@ assert_diagnostics_reachable_at_1080p() {
     echo "1080p diagnostics test: passed; restored default density"
 }
 
+wait_for_log_marker 'native_planner_validation=pass' 'Rust planner JNI output matches the Kotlin reference corpus'
+wait_for_plan_record_minimum \
+    'surface=.*native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)' \
+    1 'live surface plan uses one batched Rust JNI call'
+initial_planner_log="$(adb logcat -d -s NKScaleTV:V AndroidRuntime:E)"
+assert_surface_plan_calls_once "$initial_planner_log" 'surface=.*native_planner_runtime_plan=' 'initial surface plan'
+printf '%s\n' "$initial_planner_log" > "$output_dir/native-planner-initial.logcat.txt"
 assert_diagnostics_reachable_at_1080p
 
 wait_for_log_marker 'shaders=ready' 'GLES shader initialization'
@@ -466,6 +591,7 @@ sha256sum \
     "$output_dir/fsr1-sharpness9.png" \
     "$output_dir/native4k-strategy-c.png" \
     "$output_dir/native4k-strategy-c.logcat.txt" \
+    "$output_dir/native-planner-initial.logcat.txt" \
     "$output_dir/preset-and-settings-logcat.txt" \
     "$output_dir/logcat.txt" \
     "$output_dir/local-media/local-input-playback.txt"

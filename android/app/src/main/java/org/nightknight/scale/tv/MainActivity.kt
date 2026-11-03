@@ -47,6 +47,9 @@ class MainActivity : Activity() {
     private val preferences by lazy { getSharedPreferences("tv_settings", MODE_PRIVATE) }
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FsrDemoRenderer
+    private val renderModeUpdateDispatcher = CoalescedGlEventDispatcher { action ->
+        glView.queueEvent { action() }
+    }
     private lateinit var modeSummary: TextView
     private lateinit var resolutionSummary: TextView
     private lateinit var gpuSummary: TextView
@@ -136,7 +139,15 @@ class MainActivity : Activity() {
             renderer.testSourceOverride = VideoTestSource.fromProfileId(intent.getStringExtra("nkscale_test_source"))
         }
         if (renderer.validateExternalEasuOnce) Log.i(TAG, "easu_equivalence=scheduled debug_only=true")
-        renderer.mode = selectedPreset.renderMode
+        if (debugBuild && intent.getBooleanExtra("nkscale_validate_native_planner", false)) {
+            val plannerPassed = NativeEasuStagePlanner.validateAgainstKotlinFallback()
+            Log.i(
+                TAG,
+                "native_planner_validation=${if (plannerPassed) "pass" else "fail"} " +
+                    "planner=${NativeEasuStagePlanner.status} calls=${NativeEasuStagePlanner.nativePlannerCalls} cases=8",
+            )
+        }
+        renderer.requestedMode = selectedPreset.renderMode
         renderer.aspectMode = selectedAspectMode
         renderer.scalingStrategy = selectedScalingStrategy
         renderer.sharpnessProgress = preferences.getInt("sharpness_progress", selectedPreset.defaultSharpness)
@@ -168,7 +179,7 @@ class MainActivity : Activity() {
         enterImmersiveMode()
         presetButtons[selectedPreset]?.requestFocus()
         updatePresetButtons()
-        logRenderMode(renderer.mode)
+        logRenderMode(renderer.requestedMode)
     }
 
     override fun onResume() {
@@ -517,8 +528,8 @@ class MainActivity : Activity() {
 
     private fun setPreset(preset: UpscalePreset) {
         selectedPreset = preset
-        renderer.mode = preset.renderMode
-        renderer.resetNative4kPerformanceValidation()
+        renderer.requestedMode = preset.renderMode
+        renderModeUpdateDispatcher.request { renderer.applyRequestedModeOnGlThread() }
         glView.requestRender()
         val saved = preferences.edit().putString("upscale_preset", preset.id).commit()
         if (!saved) Log.e(TAG, "settings=preset-save-failed id=${preset.id}")
@@ -1078,6 +1089,7 @@ class MainActivity : Activity() {
         val message = buildString {
             appendLine("Preset: ${selectedPreset.label} (${state.mode.id})")
             appendLine("Effective processing: ${state.effectiveMode.id}")
+            appendLine("Native EASU planner: ${NativeEasuStagePlanner.status} · calls=${NativeEasuStagePlanner.nativePlannerCalls} · last JNI/array CPU wall=${NativeEasuStagePlanner.lastNativePlannerCallMicros} µs (planning only; not GPU/frame time)")
             appendLine("Output resolution requested: ${state.requestedOutputResolution.id} · effective: ${state.effectiveOutputResolution.id}")
             appendLine("SurfaceView view bounds: ${glView.width}×${glView.height} · requested buffer: $requestedSurfaceBufferSize")
             appendLine("GLSurfaceView callback: ${state.surface} · EGL window-surface query: ${state.eglSurface ?: "unavailable"}")
