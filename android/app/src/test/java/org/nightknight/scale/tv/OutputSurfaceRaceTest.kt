@@ -7,6 +7,67 @@ import org.junit.Test
 
 class OutputSurfaceRaceTest {
     @Test
+    fun cadenceObservationAndResetSerializeWithOutputRequests() {
+        val renderer = renderer()
+        val started = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread { started.countDown(); renderer.updateNative4kPerformanceValidation(true) }
+        synchronized(renderer) {
+            worker.start()
+            check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (worker.isAlive && worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+            assertEquals("cadence observation must serialize with requests", Thread.State.BLOCKED, worker.state)
+            renderer.requestOutputResolution(OutputResolutionMode.P1080, OutputResolutionPolicy.FULL_HD)
+        }
+        worker.join(5000)
+        assertFalse(worker.isAlive)
+        assertFalse(renderer.snapshot().native4kPerformanceValidatedForAuto)
+    }
+
+    @Test
+    fun cadenceResetAlsoSerializesWithObservation() {
+        val renderer = renderer()
+        val started = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread { started.countDown(); renderer.resetNative4kPerformanceValidation() }
+        synchronized(renderer) {
+            worker.start()
+            check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (worker.isAlive && worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+            assertEquals("cadence reset must serialize with observation", Thread.State.BLOCKED, worker.state)
+        }
+        worker.join(5000)
+        assertFalse(worker.isAlive)
+    }
+
+    @Test
+    fun contextInitializationDoesNotClearNewFallback() {
+        val renderer = renderer()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        renderer.afterContextVerificationInvalidation = {
+            check(!Thread.holdsLock(renderer))
+            entered.countDown()
+            check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        val worker = Thread { runCatching { renderer.onSurfaceCreated(null, null) } }
+        worker.start()
+        try {
+            check(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)
+            setField(renderer, "surfaceSize", OutputResolutionPolicy.NATIVE_4K)
+            renderer.validateOutputResolutionForCurrentSurface()
+            org.junit.Assert.assertTrue(renderer.snapshot().surfaceFallbackRequested)
+        } finally {
+            release.countDown()
+            worker.join(5000)
+        }
+        assertFalse(worker.isAlive)
+        org.junit.Assert.assertTrue("new fallback must survive context initialization", renderer.snapshot().surfaceFallbackRequested)
+        val latched = FsrDemoRenderer::class.java.getDeclaredField("native4kFallbackLatched").apply { isAccessible = true }.getBoolean(renderer)
+        org.junit.Assert.assertTrue("new fallback latch must survive context initialization", latched)
+    }
+    @Test
     fun denoiseAllocationDoesNotHoldMonitorAndNewRequestWins() {
         val renderer = renderer()
         renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)

@@ -499,6 +499,7 @@ internal class FsrDemoRenderer(
         performanceSampleWindowStartNs = System.nanoTime()
     }
 
+    @Synchronized
     fun resetNative4kPerformanceValidation() {
         native4kPerformanceValidationPolicy.reset()
         native4kResolutionFallbackPolicy.reset()
@@ -531,8 +532,16 @@ internal class FsrDemoRenderer(
         updateOutputResolutionValidation()
     }
 
+    internal var afterContextVerificationInvalidation: (() -> Unit)? = null
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
-        synchronized(this) { invalidateOutputVerification() }
+        synchronized(this) {
+            invalidateOutputVerification()
+            native4kResolutionFallbackPolicy.reset()
+            surfaceFallbackRequested = false
+            native4kFallbackLatched = false
+        }
+        afterContextVerificationInvalidation?.invoke()
         // Context recreation invalidates the old texture name. Release the old producer
         // surface and request a replacement after onSurfaceChanged selects the source.
         decodedSurfaceTexture?.setOnFrameAvailableListener(null)
@@ -571,9 +580,6 @@ internal class FsrDemoRenderer(
         strategyBaseTarget = PixelSize(0, 0)
         currentScalingPlan = null
         appliedPlanRequestKey = null
-        resetNative4kPerformanceValidation()
-        surfaceFallbackRequested = false
-        native4kFallbackLatched = false
         frameAvailable = false
         frameRenderRequestGate.reset()
         lastVideoFrameCallbackNs.set(0L)
@@ -1196,7 +1202,8 @@ internal class FsrDemoRenderer(
     private fun minimumFramesForBudgetCheck(): Long =
         maxOf(5L, ((sourceVideoFps ?: 0f) * 0.5f).toLong())
 
-    private fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
+    @Synchronized
+    internal fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
         val newlyValidated = native4kPerformanceValidationPolicy.observe(
             native4kSurfaceVerified = native4kSurfaceVerified &&
                 requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K &&
