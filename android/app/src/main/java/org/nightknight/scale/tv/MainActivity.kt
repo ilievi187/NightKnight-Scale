@@ -186,6 +186,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        outputSurfaceDeadline.resume(SystemClock.uptimeMillis())
         if (::glView.isInitialized) {
             glView.onResume()
             renderer.resetFrameRenderRequests()
@@ -200,6 +201,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         activityResumed = false
+        outputSurfaceDeadline.pause(SystemClock.uptimeMillis())
         stopVideoPlayback()
         mainHandler.removeCallbacks(refreshDiagnostics)
         unregisterWindowFrameMetrics()
@@ -1054,6 +1056,18 @@ class MainActivity : Activity() {
             if (outputSurfaceDeadline.expired(state.native4kSurfaceVerified, now)) {
                 apply1080SurfaceFallback("4K EGL surface was not confirmed within 5 seconds; reverted to a 1080P buffer")
             }
+        } else if (!outputSurfaceFallbackApplied && requestedSurfaceBufferSize == OutputResolutionPolicy.FULL_HD) {
+            val timedOut = shouldReportUnverified1080(outputSurfaceDeadline, state.effectiveOutputResolution, now)
+            if (timedOut && !fallbackRecoveryTimedOut) {
+                outputSurfaceFallbackReason = listOfNotNull(
+                    state.outputResolutionFallbackReason,
+                    "1080P buffer was not verified within 5 seconds",
+                ).joinToString("; ")
+                Log.w(TAG, "output_resolution_unverified reason=$outputSurfaceFallbackReason")
+            } else if (!timedOut && state.effectiveOutputResolution == EffectiveOutputResolution.P1080) {
+                outputSurfaceFallbackReason = state.outputResolutionFallbackReason
+            }
+            fallbackRecoveryTimedOut = timedOut
         } else if (outputSurfaceFallbackApplied) {
             val verified = state.effectiveOutputResolution == EffectiveOutputResolution.P1080
             if (verified && fallbackRecoveryTimedOut) {

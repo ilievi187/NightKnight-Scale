@@ -72,6 +72,25 @@ class OutputSurfaceRaceTest {
         org.junit.Assert.assertTrue(deadline.expired(false, 6_001L))
     }
 
+    @Test
+    fun pausedTimeDoesNotConsumeSurfaceDeadline() {
+        val deadline = OutputSurfaceDeadline()
+        deadline.start(0L)
+        deadline.pause(1_000L)
+        deadline.resume(20_000L)
+        assertFalse(deadline.expired(false, 24_000L))
+        org.junit.Assert.assertTrue(deadline.expired(false, 24_001L))
+    }
+
+    @Test
+    fun ordinary1080RequestGetsBoundedUnverifiedDiagnostic() {
+        val deadline = OutputSurfaceDeadline()
+        deadline.start(0L)
+        assertFalse(shouldReportUnverified1080(deadline, EffectiveOutputResolution.UNVERIFIED, 5_000L))
+        org.junit.Assert.assertTrue(shouldReportUnverified1080(deadline, EffectiveOutputResolution.UNVERIFIED, 5_001L))
+        assertFalse(shouldReportUnverified1080(deadline, EffectiveOutputResolution.P1080, 5_001L))
+    }
+
     private fun renderer(): FsrDemoRenderer {
         val context = object : ContextWrapper(null) {
             override fun getApplicationInfo() = android.content.pm.ApplicationInfo()

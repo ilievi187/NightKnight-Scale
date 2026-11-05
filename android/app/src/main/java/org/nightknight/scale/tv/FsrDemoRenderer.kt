@@ -90,10 +90,21 @@ internal fun shouldTimeoutNative4kSurface(
 internal class OutputSurfaceDeadline {
     private var startedMs = 0L
     private var wasVerified = false
+    private var pausedAtMs: Long? = null
 
     fun start(nowMs: Long) {
         startedMs = nowMs
+        if (pausedAtMs != null) pausedAtMs = nowMs
         wasVerified = false
+    }
+
+    fun pause(nowMs: Long) {
+        if (pausedAtMs == null) pausedAtMs = nowMs
+    }
+
+    fun resume(nowMs: Long) {
+        pausedAtMs?.let { startedMs += nowMs - it }
+        pausedAtMs = null
     }
 
     fun expired(verified: Boolean, nowMs: Long): Boolean {
@@ -102,6 +113,9 @@ internal class OutputSurfaceDeadline {
         return !verified && nowMs - startedMs > 5_000L
     }
 }
+
+internal fun shouldReportUnverified1080(deadline: OutputSurfaceDeadline, effective: EffectiveOutputResolution, nowMs: Long): Boolean =
+    deadline.expired(effective == EffectiveOutputResolution.P1080, nowMs)
 
 internal class FsrDemoRenderer(
     private val context: Context,
