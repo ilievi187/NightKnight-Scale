@@ -80,6 +80,29 @@ internal data class RendererSnapshot(
     val aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
 )
 
+internal fun shouldTimeoutNative4kSurface(
+    requestedBuffer: PixelSize,
+    verified: Boolean,
+    fallbackApplied: Boolean,
+    elapsedMs: Long,
+): Boolean = requestedBuffer == OutputResolutionPolicy.NATIVE_4K && !verified && !fallbackApplied && elapsedMs > 5_000L
+
+internal class OutputSurfaceDeadline {
+    private var startedMs = 0L
+    private var wasVerified = false
+
+    fun start(nowMs: Long) {
+        startedMs = nowMs
+        wasVerified = false
+    }
+
+    fun expired(verified: Boolean, nowMs: Long): Boolean {
+        if (wasVerified && !verified) startedMs = nowMs
+        wasVerified = verified
+        return !verified && nowMs - startedMs > 5_000L
+    }
+}
+
 internal class FsrDemoRenderer(
     private val context: Context,
     private val onVideoSurfaceAvailable: (SurfaceTexture, VideoTestSource) -> Unit,
@@ -466,6 +489,7 @@ internal class FsrDemoRenderer(
     }
 
     /** Called on the UI thread before the matching SurfaceHolder buffer-size request. */
+    @Synchronized
     fun requestOutputResolution(
         mode: OutputResolutionMode,
         requestedBufferSize: PixelSize,
@@ -1657,7 +1681,15 @@ internal class FsrDemoRenderer(
         PixelSize(width[0], height[0]).takeIf { it.width > 0 && it.height > 0 }
     }.getOrNull()
 
+    @Synchronized
     private fun updateOutputResolutionValidation() {
+        // A previous-size callback can arrive after a new request; it cannot decide
+        // whether that request failed. The activity's deadline bounds this wait.
+        if (surfaceSize != requestedSurfaceBufferSize) {
+            native4kSurfaceVerified = false
+            effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+            return
+        }
         val viewport = RenderPolicy.contentViewport(surfaceSize, videoGeometry, aspectMode)
         val targetMatchesOutput = targetSize == PixelSize(viewport.width, viewport.height)
         val fboComplete = !mode.usesEasu || (outputTexture != 0 && framebuffer != 0)
