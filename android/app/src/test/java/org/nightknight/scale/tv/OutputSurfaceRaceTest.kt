@@ -7,6 +7,166 @@ import org.junit.Test
 
 class OutputSurfaceRaceTest {
     @Test
+    fun denoiseAllocationDoesNotHoldMonitorAndNewRequestWins() {
+        val renderer = renderer()
+        renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "surfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "eglSurfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "native4kSurfaceVerified", true)
+        setField(renderer, "sourceVideoFps", 30f)
+        setField(renderer, "lastFallbackSourceFps", 30f)
+        setField(renderer, "averageFrameIntervalMs", 60f)
+        setField(renderer, "mode", RenderMode.FSR1_DENOISE)
+        setField(renderer, "sourceSize", OutputResolutionPolicy.FULL_HD)
+        setField(renderer, "targetSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "easuProgram", 1)
+        setField(renderer, "rcasProgram", 1)
+        setField(renderer, "denoiseProgram", 1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val held = java.util.concurrent.atomic.AtomicBoolean()
+        renderer.beforeDenoiseAllocation = {
+            held.set(Thread.holdsLock(renderer))
+            entered.countDown()
+            check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        val worker = Thread { renderer.updateRuntimeFallbackForFrameBudget() }
+        worker.start()
+        try {
+            check(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("GLES allocation must not hold renderer monitor", held.get())
+            renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.FULL_HD, "new request")
+        } finally {
+            release.countDown()
+            worker.join(5000)
+        }
+        assertFalse(worker.isAlive)
+        assertFalse(renderer.snapshot().surfaceFallbackRequested)
+        assertEquals("new request", renderer.snapshot().outputResolutionFallbackReason)
+    }
+    @Test
+    fun equivalentAspectChangeRevalidatesExistingSurface() {
+        val renderer = renderer()
+        val geometry = VideoGeometry(1920, 1080)
+        val source = OutputResolutionPolicy.FULL_HD
+        val plan = FsrScalingPlanPolicy.create(
+            FsrComparisonStrategy.A_1080P_THEN_SYSTEM_SCALER, source, source, geometry, maxTextureSize = 4096,
+        )
+        setField(renderer, "surfaceSize", source)
+        setField(renderer, "eglSurfaceSize", source)
+        setField(renderer, "sourceSize", source)
+        setField(renderer, "videoGeometry", geometry)
+        setField(renderer, "maxTextureSize", 4096)
+        setField(renderer, "maxRenderbufferSize", 4096)
+        setField(renderer, "maxViewportSize", PixelSize(4096, 4096))
+        setField(renderer, "mode", RenderMode.BILINEAR)
+        renderer.requestOutputResolution(OutputResolutionMode.P1080, source)
+        renderer.applyScalingPlan(plan)
+        renderer.setAspectRatioMode(AspectRatioMode.FIT_16_9)
+        assertEquals(EffectiveOutputResolution.P1080, renderer.snapshot().effectiveOutputResolution)
+    }
+
+    @Test
+    fun surfaceChangeInvalidationResetsCadencePolicy() {
+        val renderer = renderer()
+        val policy = FsrDemoRenderer::class.java.getDeclaredField("native4kPerformanceValidationPolicy")
+            .apply { isAccessible = true }.get(renderer) as Native4kPerformanceValidationPolicy
+        repeat(5) { policy.observe(true, true, 30f, 30f) }
+        setField(renderer, "maxTextureSize", 0)
+        renderer.onSurfaceChanged(null, 1920, 1080)
+        assertFalse(policy.isValidated)
+    }
+
+    @Test
+    fun changedScalingPlanAllowsFreshCadenceValidation() {
+        val renderer = renderer()
+        val policy = FsrDemoRenderer::class.java.getDeclaredField("native4kPerformanceValidationPolicy")
+            .apply { isAccessible = true }.get(renderer) as Native4kPerformanceValidationPolicy
+        repeat(5) { policy.observe(true, true, 30f, 30f) }
+        org.junit.Assert.assertTrue(policy.isValidated)
+        val plan = FsrScalingPlanPolicy.create(
+            FsrComparisonStrategy.A_1080P_THEN_SYSTEM_SCALER,
+            OutputResolutionPolicy.FULL_HD, OutputResolutionPolicy.NATIVE_4K,
+            VideoGeometry(1920, 1080), maxTextureSize = 4096,
+        )
+        renderer.applyScalingPlan(plan)
+        assertFalse(policy.isValidated)
+        repeat(4) { assertFalse(policy.observe(true, true, 30f, 30f)) }
+        org.junit.Assert.assertTrue(policy.observe(true, true, 30f, 30f))
+    }
+
+    @Test
+    fun contextCreationInvalidatesVerificationEvenIfGlInitializationFails() {
+        val renderer = renderer()
+        setField(renderer, "effectiveOutputResolution", EffectiveOutputResolution.P1080)
+        setField(renderer, "native4kSurfaceVerified", true)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread { started.countDown(); runCatching { renderer.onSurfaceCreated(null, null) } }
+        synchronized(renderer) {
+            worker.start()
+            check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (worker.isAlive && worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(Thread.State.BLOCKED, worker.state)
+        }
+        worker.join(5000)
+        assertEquals(EffectiveOutputResolution.UNVERIFIED, renderer.snapshot().effectiveOutputResolution)
+        assertFalse(renderer.snapshot().native4kSurfaceVerified)
+    }
+
+    @Test
+    fun applyingChangedTargetInvalidatesPreviousVerification() {
+        val renderer = renderer()
+        val plan = FsrScalingPlanPolicy.create(
+            FsrComparisonStrategy.A_1080P_THEN_SYSTEM_SCALER,
+            OutputResolutionPolicy.FULL_HD, OutputResolutionPolicy.NATIVE_4K,
+            VideoGeometry(1920, 1080), maxTextureSize = 4096,
+        )
+        setField(renderer, "targetSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "effectiveOutputResolution", EffectiveOutputResolution.P1080)
+        setField(renderer, "native4kSurfaceVerified", true)
+        renderer.applyScalingPlan(plan)
+        assertEquals(plan.processingTarget, renderer.snapshot().processedTarget)
+        assertEquals(EffectiveOutputResolution.UNVERIFIED, renderer.snapshot().effectiveOutputResolution)
+        assertFalse(renderer.snapshot().native4kSurfaceVerified)
+    }
+
+    @Test
+    fun eglRecheckPublishesUnavailableSurfaceAsUnverified() {
+        val renderer = renderer()
+        setField(renderer, "surfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "eglSurfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "effectiveOutputResolution", EffectiveOutputResolution.P1080)
+        setField(renderer, "native4kSurfaceVerified", true)
+        renderer.validateOutputResolutionForCurrentSurface()
+        val state = renderer.snapshot()
+        assertEquals(null, state.eglSurface)
+        assertEquals(EffectiveOutputResolution.UNVERIFIED, state.effectiveOutputResolution)
+        assertFalse(state.native4kSurfaceVerified)
+    }
+
+    @Test
+    fun eglPublicationSerializesWithSnapshots() {
+        val renderer = renderer()
+        setField(renderer, "eglSurfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "effectiveOutputResolution", EffectiveOutputResolution.P1080)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread { started.countDown(); renderer.publishEglSurfaceSize(null) }
+        synchronized(renderer) {
+            worker.start()
+            check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (worker.isAlive && worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(Thread.State.BLOCKED, worker.state)
+            assertEquals(OutputResolutionPolicy.NATIVE_4K, renderer.snapshot().eglSurface)
+        }
+        worker.join(5000)
+        assertFalse(worker.isAlive)
+        assertEquals(null, renderer.snapshot().eglSurface)
+        assertEquals(EffectiveOutputResolution.UNVERIFIED, renderer.snapshot().effectiveOutputResolution)
+    }
+
+    @Test
     fun performanceFallbackCannotRaceANewOutputRequest() {
         val renderer = renderer()
         renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)
