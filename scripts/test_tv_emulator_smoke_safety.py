@@ -71,15 +71,9 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
 
     def run_native_validation(self, log):
         script = SMOKE_SCRIPT.read_text(encoding="utf-8")
-        start = script.find("validate_native4k_snapshot() {")
-        if start < 0:
-            # Exercise the existing assertion until the snapshot validator is introduced.
-            start = script.index("assert_c_surface_plan_matches_output() {")
-            end = script.index("\n}\n", start) + 3
-            command = script[start:end] + '\nassert_c_surface_plan_matches_output "$(cat)" "1920×1080" "a_1080p_system_scaler" false ""\n'
-        else:
-            end = script.index("\n}\n", start) + 3
-            command = script[start:end] + '\nvalidate_native4k_snapshot "$(cat)"\n'
+        start = script.index("validate_native4k_snapshot() {")
+        end = script.index("\n}\n", start) + 3
+        command = script[start:end] + '\nvalidate_native4k_snapshot "$(cat)"\n'
         return subprocess.run(["bash", "-c", command], input=log, text=True, capture_output=True, check=False)
 
     def fallback_log(self):
@@ -88,9 +82,9 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
             "surface=3840×2160 source=720×576 target=2880×2160 requested_buffer=3840×2160 strategy_requested=c_easu_1080_linear_2160 strategy_effective=c_easu_1080_linear_2160 linear_final=true native_planner_runtime_plan=rust native_planner_plan_calls=1",
             "output_resolution_fallback requested=native_4k fallback_buffer=1080p effective=unverified reason=slow",
             "output_resolution_request requested=native_4k requested_buffer=1920×1080",
+            "output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080 target=1440×1080",
             "surface=1920×1080 source=720×576 target=1440×1080 requested_buffer=3840×2160 strategy_requested=c_easu_1080_linear_2160 strategy_effective=a_1080p_system_scaler linear_final=false native_planner_runtime_plan=rust native_planner_plan_calls=1",
             "decoded_size=720×576 target=1440×1080 surface=1920×1080 native_planner_runtime_plan=rust native_planner_plan_calls=1",
-            "output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080 target=1440×1080",
         ])
     def test_geometry_update_may_change_target_after_surface_plan(self):
         log = self.fallback_log().replace(
@@ -99,8 +93,26 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
         result = self.run_native_validation(log)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_fallback_from_auto_request_is_not_native4k_evidence(self):
+        log = self.fallback_log().replace("output_resolution_fallback requested=native_4k", "output_resolution_fallback requested=auto")
+        self.assertNotEqual(self.run_native_validation(log).returncode, 0)
+
+    def test_plan_with_surface_and_source_but_no_target_is_rejected(self):
+        log = self.fallback_log() + "\nsurface=1920×1080 source=720×576"
+        self.assertNotEqual(self.run_native_validation(log).returncode, 0)
+
+    def test_old_plan_cannot_validate_later_verification(self):
+        lines = self.fallback_log().splitlines()
+        log = "\n".join(lines + [lines[4]])
+        self.assertNotEqual(self.run_native_validation(log).returncode, 0)
+
+    def test_fallback_cannot_cross_a_new_native4k_request(self):
+        lines = self.fallback_log().splitlines()
+        log = "\n".join(lines[:3] + [lines[0]] + lines[3:])
+        self.assertNotEqual(self.run_native_validation(log).returncode, 0)
+
     def test_old_plans_cannot_validate_new_request(self):
-        log = self.fallback_log() + "\noutput_resolution_request requested=native_4k requested_buffer=1920×1080\n" + self.fallback_log().splitlines()[-1]
+        log = self.fallback_log() + "\noutput_resolution_request requested=native_4k requested_buffer=1920×1080\n" + self.fallback_log().splitlines()[4]
         self.assertNotEqual(self.run_native_validation(log).returncode, 0)
 
     def test_fallback_reason_does_not_survive_a_later_1080p_request(self):
@@ -127,6 +139,31 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("1440×1080", result.stdout)
 
+    def test_legacy_c_plan_helper_accepts_aspect_fit(self):
+        script = SMOKE_SCRIPT.read_text(encoding="utf-8")
+        start = script.index("assert_c_surface_plan_matches_output() {")
+        end = script.index("\n}\n", start) + 3
+        command = script[start:end] + '\nassert_c_surface_plan_matches_output "$(cat)" "1920×1080" "a_1080p_system_scaler" false ""\n'
+        record = self.fallback_log().splitlines()[5]
+        result = subprocess.run(["bash", "-c", command], input=record, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_captured_fallback_with_transient_4k_and_decoded_resize(self):
+        log = "\n".join([
+            "output_resolution_request requested=native_4k requested_buffer=3840×2160",
+            "output_resolution_fallback requested=native_4k fallback_buffer=1080p effective=unverified reason=GL surface callback reported 1920×1080",
+            "surface=1920×1080 source=720×576 target=1440×1080 requested_buffer=3840×2160 strategy_requested=c_easu_1080_linear_2160 strategy_effective=a_1080p_system_scaler linear_final=false native_planner_runtime_plan=rust native_planner_plan_calls=1",
+            "output_resolution_unverified requested=native_4k buffer=1920×1080 reason=transient",
+            "surface=3840×2160 source=720×576 target=2880×2160 requested_buffer=1920×1080 strategy_requested=c_easu_1080_linear_2160 strategy_effective=c_easu_1080_linear_2160 linear_final=true native_planner_runtime_plan=rust native_planner_plan_calls=1",
+            "output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080 target=1440×1080",
+            "surface=1920×1080 source=720×576 target=1440×1080 requested_buffer=1920×1080 strategy_requested=c_easu_1080_linear_2160 strategy_effective=a_1080p_system_scaler linear_final=false native_planner_runtime_plan=rust native_planner_plan_calls=1",
+            "output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080 target=1920×1080",
+            "decoded_size=1024×576 target=1920×1080 surface=1920×1080 native_planner_runtime_plan=rust native_planner_plan_calls=1",
+        ])
+        result = self.run_native_validation(log)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1080p 1920×1080")
+
     def test_rejects_stale_or_malformed_final_snapshots(self):
         log = self.fallback_log()
         cases = {
@@ -148,9 +185,9 @@ class TvEmulatorSmokeSafetyTests(unittest.TestCase):
     def test_native_4k_requires_profile_after_latest_status(self):
         log = "\n".join([
             "output_resolution_request requested=native_4k requested_buffer=3840×2160",
+            "output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160 target=2880×2160",
             "surface=3840×2160 source=720×576 target=2880×2160 requested_buffer=3840×2160 strategy_requested=c_easu_1080_linear_2160 strategy_effective=c_easu_1080_linear_2160 linear_final=true native_planner_runtime_plan=rust native_planner_plan_calls=1",
             "decoded_size=720×576 target=2880×2160 surface=3840×2160 native_planner_runtime_plan=rust native_planner_plan_calls=1",
-            "output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160 target=2880×2160",
         ])
         self.assertNotEqual(self.run_native_validation("native4k_auto_profile=validated\n" + log).returncode, 0)
         result = self.run_native_validation(log + "\nnative4k_auto_profile=validated")

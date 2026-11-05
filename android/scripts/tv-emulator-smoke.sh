@@ -148,7 +148,7 @@ assert_c_surface_plan_matches_output() {
     local expected_effective_strategy="$3"
     local require_linear_final="$4"
     local expected_requested_buffer="$5"
-    local pattern="surface=${expected_size} .*target=${expected_size} "
+    local pattern="surface=${expected_size} .*target=[0-9]+×[0-9]+ "
     if [[ -n "$expected_requested_buffer" ]]; then
         pattern+="requested_buffer=${expected_requested_buffer} "
     else
@@ -161,7 +161,15 @@ assert_c_surface_plan_matches_output() {
         *) echo "Invalid linear-final expectation: $require_linear_final" >&2; exit 2 ;;
     esac
     pattern+="native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)"
-    if ! grep -Eq "$pattern" <<< "$log_output"; then
+    if ! grep -E "$pattern" <<< "$log_output" | python3 -c '
+import re, sys
+width, height = map(int, sys.argv[1].split("×"))
+for line in sys.stdin:
+    match = re.search(r"(?:^|\s)target=([0-9]+)×([0-9]+)(?:\s|$)", line)
+    if match and 0 < int(match[1]) <= width and 0 < int(match[2]) <= height:
+        sys.exit(0)
+sys.exit(1)
+' "$expected_size"; then
         echo "C plan record did not match the effective output buffer $expected_size" >&2
         printf '%s\n' "$log_output" >&2
         exit 1
@@ -217,6 +225,8 @@ for index, line in enumerate(lines):
                 fallback = None
             fallback_pending_request = False
         elif re.search(r"\boutput_resolution_(?:auto_fallback|fallback)\b", line):
+            if field(line, "requested") != "native_4k":
+                fail("fallback belongs to another output request")
             fallback = field(line, "reason")
             fallback_pending_request = True
         else:
@@ -231,6 +241,7 @@ for index, line in enumerate(lines):
     # Ignore telemetry; these are the renderer's plan-bearing records.
     candidate = ("decoded_size=" in line or "requested_buffer=" in line or
                  "strategy_requested=c_easu_1080_linear_2160" in line and "surface=" in line or
+                 "surface=" in line and "source=" in line or
                  "target=" in line and ("surface=" in line or "source=" in line))
     if not candidate:
         continue
@@ -267,8 +278,8 @@ target = field(line, "target")
 bounded(target, surface)
 if (effective, surface, egl) not in (("native_4k", "3840×2160", "3840×2160"), ("1080p", "1920×1080", "1920×1080")):
     fail("unverified output dimensions")
-if plans[-1][1:] != (surface, target) or surface_plans[-1][1] != surface:
-    fail("latest plan and verified output targets differ")
+if plans[-1][0] <= state[0] or plans[-1][1:] != (surface, target) or surface_plans[-1][1] != surface:
+    fail("latest plan must follow and match the verified output")
 if effective == "native_4k":
     if last_profile <= last_transition or surface_plans[-1][4] != "3840×2160":
         fail("native-4K profile is not current")
