@@ -168,6 +168,116 @@ assert_c_surface_plan_matches_output() {
     fi
 }
 
+
+validate_native4k_snapshot() {
+    python3 - "$1" <<'PYVALIDATOR'
+import re
+import sys
+
+lines = sys.argv[1].splitlines()
+state = None
+last_transition = -1
+last_profile = -1
+fallback = None
+fallback_pending_request = False
+plans = []
+surface_plans = []
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+def field(line, name):
+    values = re.findall(r"(?:^|\s)" + re.escape(name) + r"=([^\s]*)", line)
+    if len(values) != 1 or not values[0]:
+        fail("missing, blank or duplicated " + name + ": " + line)
+    return values[0]
+
+def size(value):
+    if not re.fullmatch(r"[0-9]{1,10}×[0-9]{1,10}", value):
+        fail("invalid dimensions: " + value)
+    pair = tuple(map(int, value.split("×")))
+    if any(n < 1 or n > 2147483647 for n in pair):
+        fail("out-of-range dimensions: " + value)
+    return pair
+
+def bounded(target, surface):
+    t, s = size(target), size(surface)
+    if any(a > b for a, b in zip(t, s)):
+        fail("target exceeds surface")
+
+for index, line in enumerate(lines):
+    if re.search(r"\boutput_resolution_(?:request|verified|auto_fallback|fallback|unverified)\b", line):
+        last_transition = index
+        if "output_resolution_request " in line:
+            plans.clear()
+            surface_plans.clear()
+            requested_buffer = field(line, "requested_buffer")
+            if requested_buffer != "1920×1080" or not fallback_pending_request:
+                fallback = None
+            fallback_pending_request = False
+        elif re.search(r"\boutput_resolution_(?:auto_fallback|fallback)\b", line):
+            fallback = field(line, "reason")
+            fallback_pending_request = True
+        else:
+            fallback_pending_request = False
+        if "output_resolution_verified " in line:
+            state = (index, line)
+        else:
+            state = None
+        continue
+    if "native4k_auto_profile=validated" in line:
+        last_profile = index
+    # Ignore telemetry; these are the renderer's plan-bearing records.
+    candidate = ("decoded_size=" in line or "requested_buffer=" in line or
+                 "strategy_requested=c_easu_1080_linear_2160" in line and "surface=" in line or
+                 "target=" in line and ("surface=" in line or "source=" in line))
+    if not candidate:
+        continue
+    surface = field(line, "surface")
+    target = field(line, "target")
+    bounded(target, surface)
+    if field(line, "native_planner_runtime_plan") != "rust" or field(line, "native_planner_plan_calls") != "1":
+        fail("plan must have exactly one Rust planner call")
+    plans.append((index, surface, target))
+    if "decoded_size=" not in line:
+        if field(line, "strategy_requested") != "c_easu_1080_linear_2160":
+            fail("unexpected requested strategy")
+        requested = field(line, "requested_buffer")
+        if requested not in ("3840×2160", "1920×1080"):
+            fail("unexpected requested buffer")
+        effective = field(line, "strategy_effective")
+        linear = field(line, "linear_final")
+        if (surface, effective, linear) not in (
+            ("3840×2160", "c_easu_1080_linear_2160", "true"),
+            ("1920×1080", "a_1080p_system_scaler", "false"),
+        ):
+            fail("inconsistent C strategy surface plan")
+        surface_plans.append((index, surface, target, effective, requested))
+
+if state is None or not plans or not surface_plans:
+    fail("no current verified state and matching plans")
+_, line = state
+if field(line, "requested") != "native_4k":
+    fail("wrong output request")
+effective = field(line, "effective")
+surface = field(line, "surface")
+egl = field(line, "egl")
+target = field(line, "target")
+bounded(target, surface)
+if (effective, surface, egl) not in (("native_4k", "3840×2160", "3840×2160"), ("1080p", "1920×1080", "1920×1080")):
+    fail("unverified output dimensions")
+if plans[-1][1:] != (surface, target) or surface_plans[-1][1] != surface:
+    fail("latest plan and verified output targets differ")
+if effective == "native_4k":
+    if last_profile <= last_transition or surface_plans[-1][4] != "3840×2160":
+        fail("native-4K profile is not current")
+elif not fallback:
+    fail("fallback has no reason")
+print(effective + " " + target)
+PYVALIDATOR
+}
+
 press_preset() {
     local preset_id="$1"
     local description="$2"
@@ -248,51 +358,29 @@ assert_native4k_linear_final_strategy() {
         'surface=.*strategy_requested=c_easu_1080_linear_2160' \
         1 'native-4K C surface plan'
 
-    local verified=0
+    wait_for_log_marker 'performance_sample requested=fsr1 ' 'native-4K strategy performance window' 90
+    local log_output decision=""
     for attempt in $(seq 1 90); do
-        local log_output
         log_output="$(adb logcat -d -s NKScaleTV:V)"
-        if grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k' <<< "$log_output"; then
-            verified=1
-            break
-        fi
-        if grep -Fq 'output_resolution_fallback requested=native_4k' <<< "$log_output"; then
+        if decision="$(validate_native4k_snapshot "$log_output" 2>/dev/null)"; then
             break
         fi
         sleep 1
     done
-
-    local log_output
+    # Decide again from the immutable artifact snapshot, not an earlier polling result.
     log_output="$(adb logcat -d -s NKScaleTV:V)"
-    assert_c_surface_plan_calls_once "$log_output"
-    if [ "$verified" -eq 1 ]; then
-        assert_c_surface_plan_matches_output \
-            "$log_output" "3840×2160" "c_easu_1080_linear_2160" true "3840×2160"
-        if ! grep -Fq 'output_resolution_verified requested=native_4k effective=native_4k surface=3840×2160 egl=3840×2160' <<< "$log_output"; then
-            echo "4K output was verified, but the C strategy/FBO dimensions were not confirmed" >&2
-            printf '%s\n' "$log_output" >&2
-            exit 1
-        fi
-        echo "Emulator-only: 3840×2160 surface/EGL/FBO and the 576p→1080p EASU→2160p linear-final plan were verified. This is not PowerVR or panel evidence."
-    else
-        if ! grep -Fq 'output_resolution_fallback requested=native_4k' <<< "$log_output"; then
-            echo "Native-4K emulator request neither verified nor reported a visible fallback" >&2
-            printf '%s\n' "$log_output" >&2
-            exit 1
-        fi
-        if ! grep -Fq 'strategy_requested=c_easu_1080_linear_2160' <<< "$log_output"; then
-            echo "Native-4K fallback did not retain the requested C strategy in renderer diagnostics" >&2
-            printf '%s\n' "$log_output" >&2
-            exit 1
-        fi
-        wait_for_log_marker 'output_resolution_verified requested=native_4k effective=1080p surface=1920×1080 egl=1920×1080' 'validated effective 1080p fallback buffer' 45
-        log_output="$(adb logcat -d -s NKScaleTV:V)"
-        assert_c_surface_plan_matches_output \
-            "$log_output" "1920×1080" "a_1080p_system_scaler" false ""
-        echo "Emulator-only: native-4K request safely fell back with a visible reason; no native-4K success is claimed."
+    if ! decision="$(validate_native4k_snapshot "$log_output")"; then
+        echo "Native-4K output did not settle on a verified, matching plan" >&2
+        printf '%s\n' "$log_output" >&2
+        exit 1
     fi
-    wait_for_log_marker 'performance_sample requested=fsr1 ' 'native-4K strategy performance window' 90
-    log_output="$(adb logcat -d -s NKScaleTV:V)"
+    local effective target
+    read -r effective target <<< "$decision"
+    if [[ "$effective" == native_4k ]]; then
+        echo "Emulator-only: verified 3840×2160 surface/EGL with processing target $target and native-4K profile; not physical GPU or panel evidence."
+    else
+        echo "Emulator-only: native-4K request fell back to verified 1920×1080 surface/EGL with processing target $target; no native-4K success is claimed."
+    fi
     adb exec-out screencap -p > "$output_dir/native4k-strategy-c.png"
     printf '%s\n' "$log_output" > "$output_dir/native4k-strategy-c.logcat.txt"
     adb shell am force-stop "$package_name"

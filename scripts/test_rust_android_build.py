@@ -89,8 +89,6 @@ class VerifyRustApkTests(unittest.TestCase):
         self.assertIn('local expected_effective_strategy="$3"', smoke_script)
         self.assertIn('pattern+="requested_buffer=${expected_requested_buffer} "', smoke_script)
         self.assertIn('pattern+="requested_buffer=(3840×2160|1920×1080) "', smoke_script)
-        self.assertIn('"$log_output" "3840×2160" "c_easu_1080_linear_2160" true "3840×2160"', smoke_script)
-        self.assertIn('"$log_output" "1920×1080" "a_1080p_system_scaler" false ""', smoke_script)
         self.assertIn("linear_final=false ", smoke_script)
         self.assertIn("native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)", smoke_script)
         renderer_source = (
