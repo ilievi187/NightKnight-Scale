@@ -7,6 +7,38 @@ import org.junit.Test
 
 class OutputSurfaceRaceTest {
     @Test
+    fun performanceFallbackCannotRaceANewOutputRequest() {
+        val renderer = renderer()
+        renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "surfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "eglSurfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "native4kSurfaceVerified", true)
+        setField(renderer, "sourceVideoFps", 30f)
+        setField(renderer, "lastFallbackSourceFps", 30f)
+        setField(renderer, "averageFrameIntervalMs", 60f)
+        setField(renderer, "runtimeEffectiveMode", RenderMode.BILINEAR)
+        val policy = FsrDemoRenderer::class.java.getDeclaredField("native4kResolutionFallbackPolicy").apply { isAccessible = true }.get(renderer) as Native4kResolutionFallbackPolicy
+        policy.observe(true, RenderMode.BILINEAR, true, 30f, 60f)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread { started.countDown(); renderer.updateRuntimeFallbackForFrameBudget() }
+        try {
+            synchronized(renderer) {
+                worker.start()
+                check(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+                while (worker.isAlive && worker.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+                assertEquals("fallback evaluation must serialize with output requests", Thread.State.BLOCKED, worker.state)
+                renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.FULL_HD, "new request")
+            }
+        } finally {
+            worker.join(5000)
+        }
+        assertFalse(worker.isAlive)
+        assertFalse(renderer.snapshot().surfaceFallbackRequested)
+        assertEquals("new request", renderer.snapshot().outputResolutionFallbackReason)
+    }
+
+    @Test
     fun snapshotDoesNotReadPartwayThroughLockedResolutionTransition() {
         val renderer = renderer()
         val writerEntered = java.util.concurrent.CountDownLatch(1)
@@ -44,6 +76,19 @@ class OutputSurfaceRaceTest {
         }
         assertEquals(OutputResolutionMode.NATIVE_4K, result.get().requestedOutputResolution)
         assertEquals("new request", result.get().outputResolutionFallbackReason)
+    }
+
+    @Test
+    fun surfaceChangeInvalidatesPreviousVerificationBeforeInvalidTargetReturns() {
+        val renderer = renderer()
+        setField(renderer, "surfaceSize", OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "effectiveOutputResolution", EffectiveOutputResolution.P1080)
+        setField(renderer, "native4kSurfaceVerified", true)
+        setField(renderer, "maxTextureSize", 0)
+        renderer.onSurfaceChanged(null, 1920, 1080)
+        val state = renderer.snapshot()
+        assertEquals(EffectiveOutputResolution.UNVERIFIED, state.effectiveOutputResolution)
+        assertFalse(state.native4kSurfaceVerified)
     }
 
     @Test

@@ -706,8 +706,15 @@ internal class FsrDemoRenderer(
 
     override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
-        surfaceChangeCount += 1L
-        surfaceSize = PixelSize(width, height)
+        synchronized(this) {
+            // The old verification must not survive a changed callback, including
+            // the early return when the new target dimensions are unusable.
+            effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+            native4kSurfaceVerified = false
+            native4kPerformanceValidatedForAuto = false
+            surfaceChangeCount += 1L
+            surfaceSize = PixelSize(width, height)
+        }
         val previousMode = mode
         mode = requestedMode
         if (mode != previousMode) resetModeTransitionState()
@@ -1206,7 +1213,8 @@ internal class FsrDemoRenderer(
         }
     }
 
-    private fun updateRuntimeFallbackForFrameBudget() {
+    @Synchronized
+    internal fun updateRuntimeFallbackForFrameBudget() {
         val sourceFps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
         if (sourceFps != lastFallbackSourceFps) {
             runtimeRenderFallbackPolicy.reset()
