@@ -53,6 +53,11 @@ class VerifyRustApkTests(unittest.TestCase):
         with self.assertRaisesRegex(ApkValidationError, "arm64-v8a"):
             verify_rust_apk(self.make_apk(entries))
 
+    def test_ci_runs_for_pull_requests_targeting_luna_integration_branch(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
+        pull_request = workflow.split("  pull_request:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertRegex(pull_request, r"(?m)^    branches: \[[^\n]*feature/luna-gpu-engine(?:,|\])")
+
     def test_gradle_tracks_native_builder_and_ndk_version_for_incremental_rebuilds(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         build_gradle = (repository_root / "android/app/build.gradle.kts").read_text()

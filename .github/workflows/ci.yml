@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, feature/android-tv-fsr-prototype, feature/luna-gpu-engine]
   pull_request:
-    branches: [main, feature/android-tv-fsr-prototype, feature/gemini-tv-compatibility]
+    branches: [main, feature/android-tv-fsr-prototype, feature/gemini-tv-compatibility, feature/luna-gpu-engine]
   workflow_dispatch:
 
 permissions:
