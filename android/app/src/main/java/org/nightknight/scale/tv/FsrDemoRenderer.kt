@@ -407,6 +407,9 @@ internal class FsrDemoRenderer(
     private var loggedFirstFps = false
     private var skipNextFrameCpuSubmitSample = false
 
+    // Serialize reads with requestOutputResolution and updateOutputResolutionValidation.
+    // Other GL-thread writers remain independently published; this is not a full-frame snapshot lock.
+    @Synchronized
     fun snapshot() = RendererSnapshot(
         source = sourceSize,
         processedTarget = targetSize,

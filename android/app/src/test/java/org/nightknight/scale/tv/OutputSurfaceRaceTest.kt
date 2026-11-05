@@ -7,6 +7,46 @@ import org.junit.Test
 
 class OutputSurfaceRaceTest {
     @Test
+    fun snapshotDoesNotReadPartwayThroughLockedResolutionTransition() {
+        val renderer = renderer()
+        val writerEntered = java.util.concurrent.CountDownLatch(1)
+        val finishWriter = java.util.concurrent.CountDownLatch(1)
+        val readerStarted = java.util.concurrent.CountDownLatch(1)
+        val readerDone = java.util.concurrent.CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicReference<RendererSnapshot>()
+        val writer = Thread {
+            synchronized(renderer) {
+                setField(renderer, "requestedOutputResolution", OutputResolutionMode.NATIVE_4K)
+                writerEntered.countDown()
+                check(finishWriter.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                setField(renderer, "outputResolutionFallbackReason", "new request")
+            }
+        }
+        val reader = Thread {
+            readerStarted.countDown()
+            result.set(renderer.snapshot())
+            readerDone.countDown()
+        }
+        writer.start()
+        try {
+            org.junit.Assert.assertTrue(writerEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            reader.start()
+            org.junit.Assert.assertTrue(readerStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (reader.state != Thread.State.BLOCKED && readerDone.count != 0L && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals("snapshot must wait for the resolution transition", Thread.State.BLOCKED, reader.state)
+        } finally {
+            finishWriter.countDown()
+            writer.join(5000)
+            if (reader.state != Thread.State.NEW) reader.join(5000)
+        }
+        assertEquals(OutputResolutionMode.NATIVE_4K, result.get().requestedOutputResolution)
+        assertEquals("new request", result.get().outputResolutionFallbackReason)
+    }
+
+    @Test
     fun old1080SurfaceDoesNotRequestFallbackWhile4kResizeIsPending() {
         val context = object : ContextWrapper(null) {
             override fun getApplicationInfo() = android.content.pm.ApplicationInfo()
