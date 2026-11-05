@@ -7,6 +7,58 @@ import org.junit.Test
 
 class OutputSurfaceRaceTest {
     @Test
+    fun validatedOldCadenceCannotRepublishAfterNew1080Request() {
+        val renderer = renderer()
+        renderer.requestOutputResolution(OutputResolutionMode.NATIVE_4K, OutputResolutionPolicy.NATIVE_4K)
+        setField(renderer, "native4kSurfaceVerified", true)
+        setField(renderer, "mode", RenderMode.FSR1)
+        setField(renderer, "effectiveMode", RenderMode.FSR1)
+        setField(renderer, "sourceVideoFps", 30f)
+        setField(renderer, "averageFrameIntervalMs", 30f)
+        repeat(4) { renderer.updateNative4kPerformanceValidation(true) }
+        val policy = FsrDemoRenderer::class.java.getDeclaredField("native4kPerformanceValidationPolicy")
+            .apply { isAccessible = true }.get(renderer) as Native4kPerformanceValidationPolicy
+        assertFalse(policy.isValidated)
+        assertFalse(renderer.snapshot().native4kPerformanceValidatedForAuto)
+
+        val observed = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val requestStarted = java.util.concurrent.CountDownLatch(1)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable>()
+        renderer.afterNative4kCadenceObservation = {
+            check(policy.isValidated)
+            observed.countDown()
+            check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        val oldEvaluation = Thread { runCatching { renderer.updateNative4kPerformanceValidation(true) }.exceptionOrNull()?.let(failure::set) }
+        val newRequest = Thread {
+            requestStarted.countDown()
+            runCatching { renderer.requestOutputResolution(OutputResolutionMode.P1080, OutputResolutionPolicy.FULL_HD) }
+                .exceptionOrNull()?.let(failure::set)
+        }
+        oldEvaluation.start()
+        try {
+            check(observed.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            newRequest.start()
+            check(requestStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+            while (newRequest.isAlive && newRequest.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.yield()
+            assertEquals("new request must wait for old observation and publication", Thread.State.BLOCKED, newRequest.state)
+        } finally {
+            release.countDown()
+            oldEvaluation.join(5000)
+            if (newRequest.state != Thread.State.NEW) newRequest.join(5000)
+        }
+        assertFalse(oldEvaluation.isAlive)
+        assertFalse(newRequest.isAlive)
+        failure.get()?.let { throw AssertionError("worker failed", it) }
+        val state = renderer.snapshot()
+        assertEquals(OutputResolutionMode.P1080, state.requestedOutputResolution)
+        assertFalse(state.native4kPerformanceValidatedForAuto)
+        assertFalse(policy.isValidated)
+    }
+
+    @Test
     fun cadenceObservationAndResetSerializeWithOutputRequests() {
         val renderer = renderer()
         val started = java.util.concurrent.CountDownLatch(1)

@@ -1202,6 +1202,9 @@ internal class FsrDemoRenderer(
     private fun minimumFramesForBudgetCheck(): Long =
         maxOf(5L, ((sourceVideoFps ?: 0f) * 0.5f).toLong())
 
+    // Test seam: runs under the same monitor as the observation and publication.
+    internal var afterNative4kCadenceObservation: (() -> Unit)? = null
+
     @Synchronized
     internal fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
         val newlyValidated = native4kPerformanceValidationPolicy.observe(
@@ -1214,6 +1217,7 @@ internal class FsrDemoRenderer(
             averageRendererIntervalMs = averageFrameIntervalMs,
         )
         if (newlyValidated) {
+            afterNative4kCadenceObservation?.invoke()
             native4kPerformanceValidatedForAuto = true
             Log.i(
                 TAG,
