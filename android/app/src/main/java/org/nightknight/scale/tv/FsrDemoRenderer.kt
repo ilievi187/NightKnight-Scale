@@ -80,6 +80,43 @@ internal data class RendererSnapshot(
     val aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
 )
 
+internal fun shouldTimeoutNative4kSurface(
+    requestedBuffer: PixelSize,
+    verified: Boolean,
+    fallbackApplied: Boolean,
+    elapsedMs: Long,
+): Boolean = requestedBuffer == OutputResolutionPolicy.NATIVE_4K && !verified && !fallbackApplied && elapsedMs > 5_000L
+
+internal class OutputSurfaceDeadline {
+    private var startedMs = 0L
+    private var wasVerified = false
+    private var pausedAtMs: Long? = null
+
+    fun start(nowMs: Long) {
+        startedMs = nowMs
+        if (pausedAtMs != null) pausedAtMs = nowMs
+        wasVerified = false
+    }
+
+    fun pause(nowMs: Long) {
+        if (pausedAtMs == null) pausedAtMs = nowMs
+    }
+
+    fun resume(nowMs: Long) {
+        pausedAtMs?.let { startedMs += nowMs - it }
+        pausedAtMs = null
+    }
+
+    fun expired(verified: Boolean, nowMs: Long): Boolean {
+        if (wasVerified && !verified) startedMs = nowMs
+        wasVerified = verified
+        return !verified && nowMs - startedMs > 5_000L
+    }
+}
+
+internal fun shouldReportUnverified1080(deadline: OutputSurfaceDeadline, effective: EffectiveOutputResolution, nowMs: Long): Boolean =
+    deadline.expired(effective == EffectiveOutputResolution.P1080, nowMs)
+
 internal class FsrDemoRenderer(
     private val context: Context,
     private val onVideoSurfaceAvailable: (SurfaceTexture, VideoTestSource) -> Unit,
@@ -370,6 +407,9 @@ internal class FsrDemoRenderer(
     private var loggedFirstFps = false
     private var skipNextFrameCpuSubmitSample = false
 
+    // Serialize reads with requestOutputResolution and updateOutputResolutionValidation.
+    // Other GL-thread writers remain independently published; this is not a full-frame snapshot lock.
+    @Synchronized
     fun snapshot() = RendererSnapshot(
         source = sourceSize,
         processedTarget = targetSize,
@@ -459,6 +499,7 @@ internal class FsrDemoRenderer(
         performanceSampleWindowStartNs = System.nanoTime()
     }
 
+    @Synchronized
     fun resetNative4kPerformanceValidation() {
         native4kPerformanceValidationPolicy.reset()
         native4kResolutionFallbackPolicy.reset()
@@ -466,6 +507,7 @@ internal class FsrDemoRenderer(
     }
 
     /** Called on the UI thread before the matching SurfaceHolder buffer-size request. */
+    @Synchronized
     fun requestOutputResolution(
         mode: OutputResolutionMode,
         requestedBufferSize: PixelSize,
@@ -486,11 +528,20 @@ internal class FsrDemoRenderer(
     /** Rechecks a fixed-size request when the existing callback dimensions already match it. */
     fun validateOutputResolutionForCurrentSurface() {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) return
-        eglSurfaceSize = queryCurrentEglSurfaceSize()
+        publishEglSurfaceSize(queryCurrentEglSurfaceSize())
         updateOutputResolutionValidation()
     }
 
+    internal var afterContextVerificationInvalidation: (() -> Unit)? = null
+
     override fun onSurfaceCreated(unused: GL10?, config: EGLConfig?) {
+        synchronized(this) {
+            invalidateOutputVerification()
+            native4kResolutionFallbackPolicy.reset()
+            surfaceFallbackRequested = false
+            native4kFallbackLatched = false
+        }
+        afterContextVerificationInvalidation?.invoke()
         // Context recreation invalidates the old texture name. Release the old producer
         // surface and request a replacement after onSurfaceChanged selects the source.
         decodedSurfaceTexture?.setOnFrameAvailableListener(null)
@@ -529,11 +580,6 @@ internal class FsrDemoRenderer(
         strategyBaseTarget = PixelSize(0, 0)
         currentScalingPlan = null
         appliedPlanRequestKey = null
-        resetNative4kPerformanceValidation()
-        native4kSurfaceVerified = false
-        effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
-        surfaceFallbackRequested = false
-        native4kFallbackLatched = false
         frameAvailable = false
         frameRenderRequestGate.reset()
         lastVideoFrameCallbackNs.set(0L)
@@ -665,13 +711,18 @@ internal class FsrDemoRenderer(
 
     override fun onSurfaceChanged(unused: GL10?, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
-        surfaceChangeCount += 1L
-        surfaceSize = PixelSize(width, height)
+        synchronized(this) {
+            // The old verification must not survive a changed callback, including
+            // the early return when the new target dimensions are unusable.
+            invalidateOutputVerification()
+            surfaceChangeCount += 1L
+            surfaceSize = PixelSize(width, height)
+        }
         val previousMode = mode
         mode = requestedMode
         if (mode != previousMode) resetModeTransitionState()
         appliedPlanRequestKey = null
-        eglSurfaceSize = queryCurrentEglSurfaceSize()
+        publishEglSurfaceSize(queryCurrentEglSurfaceSize())
         // Avoid allocating an unbounded multi-4K intermediate on unusually large displays.
         targetSize = RenderPolicy.targetFor(surfaceSize, minOf(maxTextureSize, 4096))
         if (targetSize.width <= 0 || targetSize.height <= 0) {
@@ -734,7 +785,10 @@ internal class FsrDemoRenderer(
 
     /** Update aspect ratio override (AUTO, 16:9, 4:3, SQUARE_PIXELS). */
     fun setAspectRatioMode(mode: AspectRatioMode) {
-        aspectMode = mode
+        synchronized(this) {
+            if (aspectMode != mode) invalidateOutputVerification()
+            aspectMode = mode
+        }
         if (videoGeometry.codedWidth > 0 && surfaceSize.width > 0) {
             updateDecodedVideoGeometry(videoGeometry)
         }
@@ -801,13 +855,17 @@ internal class FsrDemoRenderer(
             newPlan.easuStages == easuStageSizes && newPlan.linearFinalScale == linearFinalScale
         ) {
             appliedPlanRequestKey = requestKey
+            updateOutputResolutionValidation()
             return
         }
 
         externalEasuValidated = false
         externalEasuRejected = false
-        videoGeometry = geometry
-        sourceSize = newSourceSize
+        synchronized(this) {
+            invalidateOutputVerification()
+            videoGeometry = geometry
+            sourceSize = newSourceSize
+        }
         applyScalingPlan(newPlan)
         error = null
         runCatching { createOrReplaceTargets() }
@@ -1144,7 +1202,11 @@ internal class FsrDemoRenderer(
     private fun minimumFramesForBudgetCheck(): Long =
         maxOf(5L, ((sourceVideoFps ?: 0f) * 0.5f).toLong())
 
-    private fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
+    // Test seam: runs under the same monitor as the observation and publication.
+    internal var afterNative4kCadenceObservation: (() -> Unit)? = null
+
+    @Synchronized
+    internal fun updateNative4kPerformanceValidation(sourceActive: Boolean) {
         val newlyValidated = native4kPerformanceValidationPolicy.observe(
             native4kSurfaceVerified = native4kSurfaceVerified &&
                 requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K &&
@@ -1155,6 +1217,7 @@ internal class FsrDemoRenderer(
             averageRendererIntervalMs = averageFrameIntervalMs,
         )
         if (newlyValidated) {
+            afterNative4kCadenceObservation?.invoke()
             native4kPerformanceValidatedForAuto = true
             Log.i(
                 TAG,
@@ -1165,7 +1228,18 @@ internal class FsrDemoRenderer(
         }
     }
 
-    private fun updateRuntimeFallbackForFrameBudget() {
+    internal fun updateRuntimeFallbackForFrameBudget() {
+        // Mode and GL resources are owned by the render thread. Resolution can allocate GLES
+        // targets, so resolve it before taking the monitor shared with UI output requests.
+        val candidateFps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
+        val resolvedMode = if (candidateFps != null && candidateFps == lastFallbackSourceFps && runtimeEffectiveMode == null) {
+            resolveActiveMode()
+        } else null
+        updateRuntimeFallbackForFrameBudgetLocked(resolvedMode)
+    }
+
+    @Synchronized
+    private fun updateRuntimeFallbackForFrameBudgetLocked(resolvedMode: RenderMode?) {
         val sourceFps = sourceVideoFps?.takeIf { it > 0f && it.isFinite() }
         if (sourceFps != lastFallbackSourceFps) {
             runtimeRenderFallbackPolicy.reset()
@@ -1180,7 +1254,7 @@ internal class FsrDemoRenderer(
         }
         val knownSourceFps = sourceFps ?: return
         val measuredRendererIntervalMs = averageFrameIntervalMs
-        val current = runtimeEffectiveMode ?: resolveActiveMode()
+        val current = runtimeEffectiveMode ?: resolvedMode ?: return
         val next = runtimeRenderFallbackPolicy.observe(current, knownSourceFps, measuredRendererIntervalMs)
         if (next != null && next != current) {
             runtimeEffectiveMode = next
@@ -1621,7 +1695,9 @@ internal class FsrDemoRenderer(
         }
     }
 
-    private fun applyScalingPlan(plan: FsrScalingPlan) {
+    @Synchronized
+    internal fun applyScalingPlan(plan: FsrScalingPlan) {
+        invalidateOutputVerification()
         effectiveScalingStrategy = plan.effectiveStrategy
         targetSize = plan.processingTarget
         strategyBaseTarget = plan.easuTarget
@@ -1630,6 +1706,20 @@ internal class FsrDemoRenderer(
         linearFinalScale = plan.linearFinalScale
         currentScalingPlan = plan
         appliedPlanRequestKey = renderPlanRequestKey(sourceSize, videoGeometry)
+    }
+
+    // Call under the snapshot monitor; EGL/GLES work must stay outside it.
+    private fun invalidateOutputVerification() {
+        native4kPerformanceValidationPolicy.reset()
+        effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+        native4kSurfaceVerified = false
+        native4kPerformanceValidatedForAuto = false
+    }
+
+    @Synchronized
+    internal fun publishEglSurfaceSize(size: PixelSize?) {
+        if (eglSurfaceSize != size) invalidateOutputVerification()
+        eglSurfaceSize = size
     }
 
     private fun renderPlanRequestKey(source: PixelSize, geometry: VideoGeometry) = RenderPlanRequestKey(
@@ -1657,7 +1747,15 @@ internal class FsrDemoRenderer(
         PixelSize(width[0], height[0]).takeIf { it.width > 0 && it.height > 0 }
     }.getOrNull()
 
+    @Synchronized
     private fun updateOutputResolutionValidation() {
+        // A previous-size callback can arrive after a new request; it cannot decide
+        // whether that request failed. The activity's deadline bounds this wait.
+        if (surfaceSize != requestedSurfaceBufferSize) {
+            native4kSurfaceVerified = false
+            effectiveOutputResolution = EffectiveOutputResolution.UNVERIFIED
+            return
+        }
         val viewport = RenderPolicy.contentViewport(surfaceSize, videoGeometry, aspectMode)
         val targetMatchesOutput = targetSize == PixelSize(viewport.width, viewport.height)
         val fboComplete = !mode.usesEasu || (outputTexture != 0 && framebuffer != 0)
@@ -1737,9 +1835,13 @@ internal class FsrDemoRenderer(
         else -> "scratch"
     }
 
+    // Test seam at the real allocation boundary; null in production.
+    internal var beforeDenoiseAllocation: (() -> Unit)? = null
+
     private fun ensureDenoiseTarget(): Boolean {
         if (denoisedTexture != 0 && denoiseFramebuffer != 0) return true
         if (qualityFallbackReason != null) return false
+        beforeDenoiseAllocation?.invoke()
         var texture = 0
         var fbo = 0
         return try {

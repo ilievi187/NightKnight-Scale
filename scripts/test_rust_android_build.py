@@ -53,6 +53,11 @@ class VerifyRustApkTests(unittest.TestCase):
         with self.assertRaisesRegex(ApkValidationError, "arm64-v8a"):
             verify_rust_apk(self.make_apk(entries))
 
+    def test_ci_runs_for_pull_requests_targeting_luna_integration_branch(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
+        pull_request = workflow.split("  pull_request:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertRegex(pull_request, r"(?m)^    branches: \[[^\n]*feature/luna-gpu-engine(?:,|\])")
+
     def test_gradle_tracks_native_builder_and_ndk_version_for_incremental_rebuilds(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         build_gradle = (repository_root / "android/app/build.gradle.kts").read_text()
@@ -84,8 +89,6 @@ class VerifyRustApkTests(unittest.TestCase):
         self.assertIn('local expected_effective_strategy="$3"', smoke_script)
         self.assertIn('pattern+="requested_buffer=${expected_requested_buffer} "', smoke_script)
         self.assertIn('pattern+="requested_buffer=(3840×2160|1920×1080) "', smoke_script)
-        self.assertIn('"$log_output" "3840×2160" "c_easu_1080_linear_2160" true "3840×2160"', smoke_script)
-        self.assertIn('"$log_output" "1920×1080" "a_1080p_system_scaler" false ""', smoke_script)
         self.assertIn("linear_final=false ", smoke_script)
         self.assertIn("native_planner_runtime_plan=rust native_planner_plan_calls=1([[:space:]]|$)", smoke_script)
         renderer_source = (

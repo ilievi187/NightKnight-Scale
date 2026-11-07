@@ -70,8 +70,9 @@ class MainActivity : Activity() {
     private var selectedOutputResolutionMode = OutputResolutionMode.AUTO
     private var selectedScalingStrategy = FsrComparisonStrategy.AUTO
     private var requestedSurfaceBufferSize = OutputResolutionPolicy.FULL_HD
-    private var outputSurfaceRequestStartedMs = 0L
-    private var outputSurfaceChangeBaseline = 0L
+    private val outputSurfaceDeadline = OutputSurfaceDeadline()
+    private var fallbackRecoveryAttempts = 0
+    private var fallbackRecoveryTimedOut = false
     private var outputSurfaceFallbackApplied = false
     private var outputSurfaceFallbackReason: String? = null
     private var selectedLocalVideoUri: Uri? = null
@@ -185,6 +186,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         activityResumed = true
+        outputSurfaceDeadline.resume(SystemClock.uptimeMillis())
         if (::glView.isInitialized) {
             glView.onResume()
             renderer.resetFrameRenderRequests()
@@ -199,6 +201,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         activityResumed = false
+        outputSurfaceDeadline.pause(SystemClock.uptimeMillis())
         stopVideoPlayback()
         mainHandler.removeCallbacks(refreshDiagnostics)
         unregisterWindowFrameMetrics()
@@ -836,8 +839,9 @@ class MainActivity : Activity() {
         )
         val previousCallbackSize = renderer.snapshot().surface
         requestedSurfaceBufferSize = bufferSize
-        outputSurfaceRequestStartedMs = SystemClock.uptimeMillis()
-        outputSurfaceChangeBaseline = renderer.snapshot().surfaceChangeCount
+        outputSurfaceDeadline.start(SystemClock.uptimeMillis())
+        fallbackRecoveryAttempts = 0
+        fallbackRecoveryTimedOut = false
         outputSurfaceFallbackApplied = false
         outputSurfaceFallbackReason = null
         val policyReason = if (mode == OutputResolutionMode.AUTO && bufferSize != OutputResolutionPolicy.NATIVE_4K) {
@@ -988,7 +992,7 @@ class MainActivity : Activity() {
         val state = renderer.snapshot()
         handleOutputSurfaceFallback(state)
         persistValidatedNative4kProfile(state)
-        val outputResolutionReason = state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
+        val outputResolutionReason = if (fallbackRecoveryTimedOut) outputSurfaceFallbackReason else state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
         modeSummary.text = when {
             state.error != null -> state.error
             outputResolutionReason != null -> "${selectedPreset.label} · output ${selectedOutputResolutionMode.label} requested; effective ${state.effectiveOutputResolution.label} · $outputResolutionReason"
@@ -1047,18 +1051,52 @@ class MainActivity : Activity() {
             apply1080SurfaceFallback(reason)
             return
         }
-        val waitingFor4kSurface = requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K &&
-            state.surfaceChangeCount <= outputSurfaceChangeBaseline && !state.native4kSurfaceVerified
-        if (waitingFor4kSurface && SystemClock.uptimeMillis() - outputSurfaceRequestStartedMs > 5_000L &&
-            !outputSurfaceFallbackApplied
-        ) {
-            apply1080SurfaceFallback("4K EGL surface was not confirmed within 5 seconds; reverted to a 1080P buffer")
+        val now = SystemClock.uptimeMillis()
+        if (requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K && !outputSurfaceFallbackApplied) {
+            if (outputSurfaceDeadline.expired(state.native4kSurfaceVerified, now)) {
+                apply1080SurfaceFallback("4K EGL surface was not confirmed within 5 seconds; reverted to a 1080P buffer")
+            }
+        } else if (!outputSurfaceFallbackApplied && requestedSurfaceBufferSize == OutputResolutionPolicy.FULL_HD) {
+            val timedOut = shouldReportUnverified1080(outputSurfaceDeadline, state.effectiveOutputResolution, now)
+            if (timedOut && !fallbackRecoveryTimedOut) {
+                outputSurfaceFallbackReason = listOfNotNull(
+                    state.outputResolutionFallbackReason,
+                    "1080P buffer was not verified within 5 seconds",
+                ).joinToString("; ")
+                Log.w(TAG, "output_resolution_unverified reason=$outputSurfaceFallbackReason")
+            } else if (!timedOut && state.effectiveOutputResolution == EffectiveOutputResolution.P1080) {
+                outputSurfaceFallbackReason = state.outputResolutionFallbackReason
+            }
+            fallbackRecoveryTimedOut = timedOut
+        } else if (outputSurfaceFallbackApplied) {
+            val verified = state.effectiveOutputResolution == EffectiveOutputResolution.P1080
+            if (verified && fallbackRecoveryTimedOut) {
+                fallbackRecoveryTimedOut = false
+                outputSurfaceFallbackReason = state.outputResolutionFallbackReason
+            }
+            if (!fallbackRecoveryTimedOut && outputSurfaceDeadline.expired(verified, now)) {
+                if (fallbackRecoveryAttempts == 0) {
+                    fallbackRecoveryAttempts++
+                    outputSurfaceDeadline.start(now)
+                    glView.holder.setFixedSize(OutputResolutionPolicy.FULL_HD.width, OutputResolutionPolicy.FULL_HD.height)
+                    glView.queueEvent { renderer.validateOutputResolutionForCurrentSurface() }
+                    glView.requestRender()
+                } else {
+                    fallbackRecoveryTimedOut = true
+                    outputSurfaceFallbackReason = (outputSurfaceFallbackReason ?: "4K fallback") +
+                        "; 1080P fallback buffer was not verified after retry"
+                    Log.w(TAG, "output_resolution_fallback_unverified reason=$outputSurfaceFallbackReason")
+                }
+            }
         }
     }
 
     private fun apply1080SurfaceFallback(reason: String) {
         outputSurfaceFallbackApplied = true
         outputSurfaceFallbackReason = reason
+        outputSurfaceDeadline.start(SystemClock.uptimeMillis())
+        fallbackRecoveryAttempts = 0
+        fallbackRecoveryTimedOut = false
         preferences.edit().remove(native4kProfileKey()).apply()
         val previousCallbackSize = renderer.snapshot().surface
         requestedSurfaceBufferSize = OutputResolutionPolicy.FULL_HD
@@ -1104,7 +1142,7 @@ class MainActivity : Activity() {
             }
             appendLine("FSR processing framebuffer: $fsrFramebufferStatus")
             appendLine("Native-4K cadence profile: session ${if (state.native4kPerformanceValidatedForAuto) "validated" else "not validated"} · persisted for this device/preset/strategy=${preferences.getBoolean(native4kProfileKey(), false)}")
-            val outputFallbackReason = state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
+            val outputFallbackReason = if (fallbackRecoveryTimedOut) outputSurfaceFallbackReason else state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
             outputFallbackReason?.let { appendLine("Output-resolution fallback/policy: $it") }
             val surfaceRgbaBytes = state.eglSurface?.let { it.width.toLong() * it.height.toLong() * 4L }
             val surfaceEstimate = surfaceRgbaBytes?.let { "%.1f".format(it / (1024f * 1024f)) + " MiB" } ?: "N/A"
