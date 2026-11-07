@@ -69,3 +69,18 @@ Temporal upscaling requires its needed motion/depth inputs. Frame generation is 
 - [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
 
 This demo is not a system-wide enhancement layer. It does not capture or replace other applications, and it has no background service. The Android milestone is incomplete until build, remote-input, frame-output and target-device checks above are performed.
+
+## M7 — Rust-assisted Android rendering engine (in progress)
+
+- [x] Add `nightknight-render-core` as a reusable Rust library with deterministic EASU stage planning, overflow-safe dimensions, and unit coverage. Kotlin retains its reference implementation.
+- [x] Add a narrow JNI stage-planning boundary with lazy load, schedule validation, safe Kotlin fallback, planner CPU/JNI timing diagnostics, and a host-JVM JNI smoke.
+- [x] Keep requested preset state separate from GL-thread-owned active mode; coalesce rapid UI requests and rebuild plans/resources before the next draw. A surface callback that adopts the request first resets stale runtime fallback state before planning.
+- [x] Skip EASU re-planning for unchanged geometry/configuration requests, reuse the chosen stages for memory and ping-pong sizing, and assert exact call counts on a single emulator log record; scope the native-4K C probe to its cleared Logcat, match its plan to the verified effective surface, require Strategy A with `linear_final=false` on the 1080p fallback, and snapshot initial JNI/surface evidence before diagnostics clears Logcat.
+- [x] Pin Rust/Cargo `1.99.0` and Android NDK `27.2.12479018` in local/CI workflows and Gradle task inputs; build script retries `ANDROID_NDK_ROOT` if `ANDROID_NDK_HOME` is invalid and uses the NDK r27 macOS ARM host tag.
+- [ ] Verify Gradle/NDK builds and APK packaging for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`; validate the x86 library on the CI Android TV emulator.
+- [ ] Benchmark native-vs-Kotlin planning and maintain the existing renderer baseline. This policy migration is not expected to improve GPU shader execution; do not claim a speedup without evidence.
+- [ ] Keep Kotlin as the GLES/frame-rendering fallback. Move GL resources, shader/program management, or FSR stage execution only after same-device correctness/resource-lifecycle tests and measurable performance evidence justify it.
+- [ ] Preserve the 30 fps sustainable playback target, unchanged FSR 1.0 equations, SAR/DAR/rotation/color behavior, and the disabled direct-OES EASU route until a corrected comparison passes.
+- [ ] Keep physical Android TV testing blocked until fresh explicit owner authorization; no native-4K PowerVR support claim before authorized validation.
+
+M7 is not complete until the Android NDK build, APK ABI verification, emulator JNI parity/live-path smoke, fallback tests, and three review passes pass. Native 4K/PowerVR and GPU performance remain explicitly unverified.

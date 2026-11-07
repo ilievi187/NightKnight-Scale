@@ -13,19 +13,25 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
+import android.view.FrameMetrics
 import android.view.Gravity
 import android.view.Surface
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.Window
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import java.io.File
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private companion object {
@@ -34,9 +40,16 @@ class MainActivity : Activity() {
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val metadataExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "NKVideoMetadata").apply { isDaemon = true }
+    }
+    private var videoRequestGeneration = 0L
     private val preferences by lazy { getSharedPreferences("tv_settings", MODE_PRIVATE) }
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FsrDemoRenderer
+    private val renderModeUpdateDispatcher = CoalescedGlEventDispatcher { action ->
+        glView.queueEvent { action() }
+    }
     private lateinit var modeSummary: TextView
     private lateinit var resolutionSummary: TextView
     private lateinit var gpuSummary: TextView
@@ -45,12 +58,27 @@ class MainActivity : Activity() {
     private lateinit var videoSummary: TextView
     private lateinit var videoButton: Button
     private lateinit var openVideoButton: Button
+    private lateinit var resetVideoButton: Button
+    private lateinit var aspectRatioButton: Button
+    private lateinit var outputResolutionButton: Button
+    private lateinit var strategyButton: Button
     private lateinit var diagnosticsButton: Button
     private lateinit var sharpnessSlider: SeekBar
     private val presetButtons = linkedMapOf<UpscalePreset, Button>()
     private var selectedPreset = UpscalePreset.BALANCED
+    private var selectedAspectMode = AspectRatioMode.AUTO
+    private var selectedOutputResolutionMode = OutputResolutionMode.AUTO
+    private var selectedScalingStrategy = FsrComparisonStrategy.AUTO
+    private var requestedSurfaceBufferSize = OutputResolutionPolicy.FULL_HD
+    private val outputSurfaceDeadline = OutputSurfaceDeadline()
+    private var fallbackRecoveryAttempts = 0
+    private var fallbackRecoveryTimedOut = false
+    private var outputSurfaceFallbackApplied = false
+    private var outputSurfaceFallbackReason: String? = null
     private var selectedLocalVideoUri: Uri? = null
     private var decodedVideoSize: PixelSize? = null
+    private var decodedVideoGeometry: VideoGeometry? = null
+    private var currentVideoMetadataAvailable = false
     private var currentVideoSurfaceTexture: SurfaceTexture? = null
     private var currentVideoSource: VideoTestSource? = null
     private var videoSurface: Surface? = null
@@ -58,6 +86,8 @@ class MainActivity : Activity() {
     private var activityResumed = false
     private var videoPlaybackError: String? = null
     private var decoderDescription = "Android MediaPlayer · decoder selected by platform"
+    private val windowFrameMetrics = WindowFrameMetricsAccumulator()
+    private var frameMetricsListener: Window.OnFrameMetricsAvailableListener? = null
 
     private val refreshDiagnostics = object : Runnable {
         override fun run() {
@@ -68,14 +98,59 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        selectedLocalVideoUri = preferences.getString("local_video_uri", null)?.let(Uri::parse)
+        val savedUriStr = preferences.getString("local_video_uri", null)
+        selectedLocalVideoUri = savedUriStr?.let { uriStr ->
+            val uri = Uri.parse(uriStr)
+            val accessible = runCatching {
+                contentResolver.openInputStream(uri)?.use { true } == true
+            }.getOrDefault(false)
+            if (accessible) {
+                uri
+            } else {
+                Log.w(TAG, "picker=saved-uri-inaccessible uri=$uriStr")
+                preferences.edit().remove("local_video_uri").apply()
+                null
+            }
+        }
         selectedPreset = UpscalePreset.fromId(preferences.getString("upscale_preset", null))
+        selectedAspectMode = AspectRatioMode.fromId(preferences.getString("aspect_mode", null))
+        selectedOutputResolutionMode = OutputResolutionMode.fromId(preferences.getString("output_resolution_mode", null))
+        selectedScalingStrategy = FsrComparisonStrategy.fromId(preferences.getString("scaling_strategy", null))
+        val debugBuild = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debugBuild) {
+            intent.getStringExtra("nkscale_output_resolution")?.let {
+                selectedOutputResolutionMode = OutputResolutionMode.fromId(it)
+            }
+            intent.getStringExtra("nkscale_strategy")?.let {
+                selectedScalingStrategy = FsrComparisonStrategy.fromId(it)
+            }
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        renderer = FsrDemoRenderer(applicationContext) { surfaceTexture, source ->
-            mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
+        renderer = FsrDemoRenderer(
+            context = applicationContext,
+            onVideoSurfaceAvailable = { surfaceTexture, source ->
+                mainHandler.post { handleVideoSurfaceAvailable(surfaceTexture, source) }
+            },
+            requestRender = { if (::glView.isInitialized) glView.requestRender() },
+        )
+        renderer.validateExternalEasuOnce =
+            debugBuild && intent.getBooleanExtra("nkscale_validate_easu_input", false)
+        if (debugBuild) {
+            renderer.testSourceOverride = VideoTestSource.fromProfileId(intent.getStringExtra("nkscale_test_source"))
         }
-        renderer.mode = selectedPreset.renderMode
+        if (renderer.validateExternalEasuOnce) Log.i(TAG, "easu_equivalence=scheduled debug_only=true")
+        if (debugBuild && intent.getBooleanExtra("nkscale_validate_native_planner", false)) {
+            val plannerPassed = NativeEasuStagePlanner.validateAgainstKotlinFallback()
+            Log.i(
+                TAG,
+                "native_planner_validation=${if (plannerPassed) "pass" else "fail"} " +
+                    "planner=${NativeEasuStagePlanner.status} calls=${NativeEasuStagePlanner.nativePlannerCalls} cases=8",
+            )
+        }
+        renderer.requestedMode = selectedPreset.renderMode
+        renderer.aspectMode = selectedAspectMode
+        renderer.scalingStrategy = selectedScalingStrategy
         renderer.sharpnessProgress = preferences.getInt("sharpness_progress", selectedPreset.defaultSharpness)
         Log.i(TAG, "settings=loaded preset=${selectedPreset.id} sharpness=${renderer.sharpnessProgress}")
         glView = GLSurfaceView(this).apply {
@@ -83,7 +158,7 @@ class MainActivity : Activity() {
             setEGLConfigChooser(8, 8, 8, 8, 0, 0)
             preserveEGLContextOnPause = true
             setRenderer(renderer)
-            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+            renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
             isFocusable = false
             isFocusableInTouchMode = false
             contentDescription = "Fullscreen OpenGL ES FSR test chart"
@@ -101,16 +176,23 @@ class MainActivity : Activity() {
         )
         root.addView(buildControlPanel(), controlPanelLayoutParams())
         setContentView(root)
+        glView.post { requestOutputResolution(selectedOutputResolutionMode) }
         enterImmersiveMode()
         presetButtons[selectedPreset]?.requestFocus()
         updatePresetButtons()
-        logRenderMode(renderer.mode)
+        logRenderMode(renderer.requestedMode)
     }
 
     override fun onResume() {
         super.onResume()
         activityResumed = true
-        if (::glView.isInitialized) glView.onResume()
+        outputSurfaceDeadline.resume(SystemClock.uptimeMillis())
+        if (::glView.isInitialized) {
+            glView.onResume()
+            renderer.resetFrameRenderRequests()
+            glView.requestRender()
+        }
+        registerWindowFrameMetrics()
         startVideoPlaybackIfReady()
         mainHandler.removeCallbacks(refreshDiagnostics)
         mainHandler.post(refreshDiagnostics)
@@ -119,9 +201,15 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         activityResumed = false
+        outputSurfaceDeadline.pause(SystemClock.uptimeMillis())
         stopVideoPlayback()
         mainHandler.removeCallbacks(refreshDiagnostics)
-        if (::glView.isInitialized) glView.onPause()
+        unregisterWindowFrameMetrics()
+        if (::glView.isInitialized) {
+            renderer.resetFrameRenderRequests()
+            glView.onPause()
+            renderer.resetFramePacingWindows()
+        }
         super.onPause()
     }
 
@@ -130,6 +218,7 @@ class MainActivity : Activity() {
         currentVideoSurfaceTexture?.setOnFrameAvailableListener(null)
         currentVideoSurfaceTexture?.release()
         currentVideoSurfaceTexture = null
+        metadataExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -145,7 +234,10 @@ class MainActivity : Activity() {
         }.getOrDefault(false)
         stopVideoPlayback()
         selectedLocalVideoUri = uri
+        renderer.sourceVideoFps = null
         decodedVideoSize = null
+        decodedVideoGeometry = null
+        currentVideoMetadataAvailable = false
         preferences.edit().apply {
             if (grantPersists) putString("local_video_uri", uri.toString()) else remove("local_video_uri")
         }.apply()
@@ -220,23 +312,59 @@ class MainActivity : Activity() {
 
         videoSummary = text("Preparing the resolution-matched video clip…", 12, Color.rgb(169, 187, 207), top = 7)
         panel.addView(videoSummary)
+
+        val openVideoRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         openVideoButton = controlButton("Open local video…") { openLocalVideoPicker() }.apply {
             id = View.generateViewId()
+            contentDescription = "Open local video file using document or photo picker"
         }
+        openVideoRow.addView(openVideoButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+        resetVideoButton = controlButton("Reset clip") { resetToDemoClip() }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Reset to packaged resolution-matched test clip"
+        }
+        openVideoRow.addView(resetVideoButton, LinearLayout.LayoutParams(dp(130), dp(48)).apply {
+            marginStart = dp(6)
+        })
         panel.addView(
-            openVideoButton,
+            openVideoRow,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
                 topMargin = dp(5)
             },
         )
+
+        val videoControlRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         videoButton = controlButton("Video loading…") {
             toggleVideoPlayback()
         }.apply {
             id = View.generateViewId()
             isEnabled = false
+            contentDescription = "Play or pause video playback"
         }
+        videoControlRow.addView(videoButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+
+        aspectRatioButton = controlButton(aspectButtonLabel(selectedAspectMode)) {
+            cycleAspectRatioMode()
+        }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Cycle aspect ratio mode: Auto SAR, Force 16:9, Force 4:3, or 1:1 Square"
+        }
+        videoControlRow.addView(aspectRatioButton, LinearLayout.LayoutParams(dp(170), dp(48)).apply {
+            marginStart = dp(6)
+        })
         panel.addView(
-            videoButton,
+            videoControlRow,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
                 topMargin = dp(5)
             },
@@ -253,6 +381,7 @@ class MainActivity : Activity() {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     renderer.sharpnessProgress = progress
                     sharpnessSummary.text = "RCAS sharpness: $progress / 20  ·  0 strongest"
+                    if (fromUser) glView.requestRender()
                     if (fromUser) {
                         val saved = preferences.edit().putInt("sharpness_progress", progress).commit()
                         if (!saved) Log.e(TAG, "settings=sharpness-save-failed")
@@ -267,11 +396,57 @@ class MainActivity : Activity() {
             button.nextFocusDownId = openVideoButton.id
         }
         openVideoButton.nextFocusUpId = presetButtons[selectedPreset]?.id ?: View.NO_ID
+        openVideoButton.nextFocusRightId = resetVideoButton.id
         openVideoButton.nextFocusDownId = videoButton.id
+
+        resetVideoButton.nextFocusLeftId = openVideoButton.id
+        resetVideoButton.nextFocusUpId = presetButtons[selectedPreset]?.id ?: View.NO_ID
+        resetVideoButton.nextFocusDownId = aspectRatioButton.id
+
         videoButton.nextFocusUpId = openVideoButton.id
+        videoButton.nextFocusRightId = aspectRatioButton.id
         videoButton.nextFocusDownId = sharpnessSlider.id
+
+        aspectRatioButton.nextFocusLeftId = videoButton.id
+        aspectRatioButton.nextFocusUpId = resetVideoButton.id
+        aspectRatioButton.nextFocusDownId = sharpnessSlider.id
+
         sharpnessSlider.nextFocusUpId = videoButton.id
         panel.addView(sharpnessSlider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)))
+
+        outputResolutionButton = controlButton(outputResolutionLabel(selectedOutputResolutionMode)) {
+            cycleOutputResolutionMode()
+        }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Output resolution request: ${selectedOutputResolutionMode.label}. Cycle AUTO, 1080P, NATIVE 4K."
+        }
+        sharpnessSlider.nextFocusDownId = outputResolutionButton.id
+        outputResolutionButton.nextFocusUpId = sharpnessSlider.id
+        panel.addView(
+            outputResolutionButton,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                topMargin = dp(4)
+            },
+        )
+
+        strategyButton = controlButton(strategyButtonLabel(selectedScalingStrategy)) {
+            cycleScalingStrategy()
+        }.apply {
+            id = View.generateViewId()
+            minimumHeight = dp(48)
+            textSize = 13f
+            contentDescription = "Rendering strategy: ${selectedScalingStrategy.label}. Cycle AUTO and comparison pipelines A through D."
+        }
+        outputResolutionButton.nextFocusDownId = strategyButton.id
+        strategyButton.nextFocusUpId = outputResolutionButton.id
+        panel.addView(
+            strategyButton,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                topMargin = dp(4)
+            },
+        )
 
         metricsSummary = text("Frame metrics pending…", 12, Color.rgb(169, 187, 207), top = 8)
         val diagnosticsRow = LinearLayout(this).apply {
@@ -289,10 +464,25 @@ class MainActivity : Activity() {
             marginStart = dp(8)
         })
         panel.addView(diagnosticsRow)
-        sharpnessSlider.nextFocusDownId = diagnosticsButton.id
-        diagnosticsButton.nextFocusUpId = sharpnessSlider.id
+        strategyButton.nextFocusDownId = diagnosticsButton.id
+        diagnosticsButton.nextFocusUpId = strategyButton.id
         diagnosticsButton.nextFocusDownId = presetButtons[selectedPreset]?.id ?: View.NO_ID
-        return panel
+
+        return ScrollView(this).apply {
+            isFillViewport = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+            isVerticalScrollBarEnabled = true
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
     }
 
     private fun controlButton(label: String, action: () -> Unit): Button = Button(this).apply {
@@ -309,11 +499,19 @@ class MainActivity : Activity() {
         setOnFocusChangeListener { view, focused ->
             val selected = presetButtons.any { (preset, button) -> button === view && preset == selectedPreset }
             view.background = roundedBackground(
-                if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+                if (focused) Color.rgb(32, 64, 96) else if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (focused) Color.rgb(66, 216, 237) else if (selected) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
                 dp(10),
                 if (focused) dp(3) else dp(1),
             )
+            if (focused && view.contentDescription == "Open detailed video and renderer diagnostics") {
+                view.postDelayed({
+                    val visibleBounds = android.graphics.Rect()
+                    val fullyVisible = view.getGlobalVisibleRect(visibleBounds) &&
+                        visibleBounds.width() >= view.width && visibleBounds.height() >= view.height
+                    Log.i(TAG, "diagnostics=focused visible=$fullyVisible bounds=$visibleBounds")
+                }, 350L)
+            }
         }
         setOnClickListener { action() }
     }
@@ -323,7 +521,7 @@ class MainActivity : Activity() {
         presetButtons.forEach { (preset, button) ->
             val selected = preset == selectedPreset
             button.background = roundedBackground(
-                if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
+                if (button.hasFocus()) Color.rgb(32, 64, 96) else if (selected) Color.rgb(17, 63, 78) else Color.rgb(23, 39, 58),
                 if (selected || button.hasFocus()) Color.rgb(66, 216, 237) else Color.rgb(60, 85, 108),
                 dp(10),
                 if (button.hasFocus()) dp(3) else dp(1),
@@ -333,12 +531,18 @@ class MainActivity : Activity() {
 
     private fun setPreset(preset: UpscalePreset) {
         selectedPreset = preset
-        renderer.mode = preset.renderMode
+        renderer.requestedMode = preset.renderMode
+        renderModeUpdateDispatcher.request { renderer.applyRequestedModeOnGlThread() }
+        glView.requestRender()
         val saved = preferences.edit().putString("upscale_preset", preset.id).commit()
         if (!saved) Log.e(TAG, "settings=preset-save-failed id=${preset.id}")
         if (::openVideoButton.isInitialized) openVideoButton.nextFocusUpId = presetButtons[preset]?.id ?: View.NO_ID
+        if (::resetVideoButton.isInitialized) resetVideoButton.nextFocusUpId = presetButtons[preset]?.id ?: View.NO_ID
         if (::diagnosticsButton.isInitialized) diagnosticsButton.nextFocusDownId = presetButtons[preset]?.id ?: View.NO_ID
         logRenderMode(preset.renderMode)
+        if (selectedOutputResolutionMode == OutputResolutionMode.AUTO) {
+            requestOutputResolution(OutputResolutionMode.AUTO)
+        }
         updatePresetButtons()
     }
 
@@ -353,6 +557,12 @@ class MainActivity : Activity() {
             currentVideoSurfaceTexture = surfaceTexture
         }
         currentVideoSource = source
+        val initialGeometry = VideoGeometry.fromSize(source.size)
+        decodedVideoGeometry = initialGeometry
+        decodedVideoSize = null
+        currentVideoMetadataAvailable = false
+        glView.queueEvent { renderer.updateDecodedVideoGeometry(initialGeometry) }
+        renderer.sourceVideoFps = if (selectedLocalVideoUri == null) source.frameRate else null
         videoPlaybackError = null
         videoSummary.text = "Preparing ${source.label} test clip…"
         if (activityResumed) startVideoPlaybackIfReady()
@@ -362,6 +572,14 @@ class MainActivity : Activity() {
         if (!activityResumed || mediaPlayer != null) return
         val surfaceTexture = currentVideoSurfaceTexture ?: return
         val source = currentVideoSource ?: return
+        renderer.sourceVideoFps = if (selectedLocalVideoUri == null) source.frameRate else null
+        if (decodedVideoGeometry == null) {
+            val initialGeometry = VideoGeometry.fromSize(source.size)
+            decodedVideoGeometry = initialGeometry
+            currentVideoMetadataAvailable = false
+            glView.queueEvent { renderer.updateDecodedVideoGeometry(initialGeometry) }
+        }
+        val requestGeneration = ++videoRequestGeneration
         val player = MediaPlayer()
         val surface = Surface(surfaceTexture)
         mediaPlayer = player
@@ -388,8 +606,20 @@ class MainActivity : Activity() {
         player.setOnVideoSizeChangedListener { _, width, height ->
             decodedVideoSize = PixelSize(width, height)
             val mime = selectedLocalVideoUri?.let { contentResolver.getType(it) } ?: "video/mp4"
-            decoderDescription = "MediaPlayer · platform codec · $mime · ${width}×$height"
-            glView.queueEvent { renderer.updateDecodedVideoSize(width, height) }
+            val geo = decodedVideoGeometry
+                ?.takeIf { currentVideoMetadataAvailable }
+                ?.copy(codedWidth = width, codedHeight = height)
+                ?: run {
+                    val (sarW, sarH) = when {
+                        VideoGeometry.isPalResolution(width, height) -> VideoGeometry.PAL_4_3_SAR
+                        VideoGeometry.isNtscResolution(width, height) -> VideoGeometry.NTSC_4_3_SAR
+                        else -> Pair(1, 1)
+                    }
+                    VideoGeometry(codedWidth = width, codedHeight = height, sarWidth = sarW, sarHeight = sarH)
+                }
+            decodedVideoGeometry = geo
+            decoderDescription = "MediaPlayer · platform codec · $mime · ${geo.summary(selectedAspectMode)}"
+            glView.queueEvent { renderer.updateDecodedVideoGeometry(geo) }
             Log.i(TAG, "video=decoded-size ${width}x$height input=${inputLabel(source)} mime=$mime")
             videoSummary.text = "Playing ${inputLabel(source)} · decoded ${width}×$height into GLES"
         }
@@ -404,18 +634,76 @@ class MainActivity : Activity() {
             false
         }
         player.setOnErrorListener { _, what, extra ->
-            handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer error $what/$extra"))
+            val errorDesc = when (extra) {
+                MediaPlayer.MEDIA_ERROR_IO -> "I/O error"
+                MediaPlayer.MEDIA_ERROR_MALFORMED -> "Malformed bitstream"
+                MediaPlayer.MEDIA_ERROR_UNSUPPORTED -> "Unsupported format"
+                MediaPlayer.MEDIA_ERROR_TIMED_OUT -> "Decoder timed out"
+                else -> "error $what/$extra"
+            }
+            handleVideoPlaybackFailure(source, IllegalStateException("MediaPlayer $errorDesc"))
             true
         }
 
         runCatching {
             val localUri = selectedLocalVideoUri
-            if (localUri != null) player.setDataSource(this, localUri)
-            else player.setDataSource(copyVideoAssetToCache(source).absolutePath)
+            val cachedFile = if (localUri != null) {
+                player.setDataSource(this, localUri)
+                null
+            } else {
+                copyVideoAssetToCache(source).also { player.setDataSource(it.absolutePath) }
+            }
             player.setSurface(surface)
+            scheduleVideoMetadataProbe(
+                player = player,
+                requestGeneration = requestGeneration,
+                source = source,
+                uri = localUri,
+                file = cachedFile,
+            )
             player.prepareAsync()
         }.onFailure { failure ->
             handleVideoPlaybackFailure(source, failure)
+        }
+    }
+
+    private fun scheduleVideoMetadataProbe(
+        player: MediaPlayer,
+        requestGeneration: Long,
+        source: VideoTestSource,
+        uri: Uri?,
+        file: File?,
+    ) {
+        metadataExecutor.execute {
+            val info = when {
+                uri != null -> VideoMetadataReader.probeUri(this, uri)
+                file != null -> VideoMetadataReader.probeFile(file)
+                else -> null
+            }
+            mainHandler.post {
+                if (requestGeneration != videoRequestGeneration || mediaPlayer !== player || isFinishing || isDestroyed) {
+                    return@post
+                }
+                if (info == null) {
+                    renderer.sourceVideoFps = if (uri == null) source.frameRate else null
+                    return@post
+                }
+                val metadataGeometry = info.geometry.takeIf { it.codedWidth > 0 && it.codedHeight > 0 }
+                val geometry = metadataGeometry ?: decodedVideoGeometry ?: VideoGeometry.fromSize(source.size)
+                decodedVideoGeometry = geometry
+                currentVideoMetadataAvailable = metadataGeometry != null
+                decoderDescription = buildString {
+                    append("MediaPlayer · platform codec · ${info.mimeType} · ${geometry.summary(selectedAspectMode)}")
+                    append(" · ${if (geometry.sarIsExplicit) "SAR metadata" else if (geometry.sarWidth != 1 || geometry.sarHeight != 1) "SAR heuristic" else "SAR unknown"}")
+                    append(" · ${geometry.colorStandardLabel} · ${geometry.colorRangeLabel} · ${geometry.colorTransferLabel}")
+                }
+                renderer.sourceVideoFps = info.frameRate.takeIf { it > 0f }
+                    ?: if (uri == null) source.frameRate else null
+                if (geometry.codedWidth > 0 && geometry.codedHeight > 0) {
+                    glView.queueEvent { renderer.updateDecodedVideoGeometry(geometry) }
+                }
+                updateDiagnostics()
+            }
         }
     }
 
@@ -435,15 +723,24 @@ class MainActivity : Activity() {
 
     private fun toggleVideoPlayback() {
         val player = mediaPlayer ?: return
+        val transition = VideoActivityPolicy.playbackTransition(player.isPlaying)
         runCatching {
-            if (player.isPlaying) {
-                player.pause()
-                videoButton.text = "Play video"
-                Log.i(TAG, "video=paused")
-            } else {
+            if (transition.nextIsPlaying) {
                 player.start()
                 videoButton.text = "Pause video"
                 Log.i(TAG, "video=playing source=${if (selectedLocalVideoUri != null) "local-video" else currentVideoSource?.assetPath}")
+            } else {
+                player.pause()
+                videoButton.text = "Play video"
+                Log.i(TAG, "video=paused")
+            }
+            if (transition.resetFramePacingWindows) {
+                val playbackState = if (transition.nextIsPlaying) "resumed" else "paused"
+                glView.queueEvent {
+                    renderer.resetFramePacingWindows()
+                    Log.i(TAG, "frame_pacing_reset reason=playback_$playbackState")
+                }
+                glView.requestRender()
             }
         }.onFailure { failure ->
             Log.e(TAG, "video=control-error", failure)
@@ -451,14 +748,234 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun cycleAspectRatioMode() {
+        val nextMode = selectedAspectMode.next()
+        selectedAspectMode = nextMode
+        preferences.edit().putString("aspect_mode", nextMode.id).apply()
+        glView.queueEvent { renderer.setAspectRatioMode(nextMode) }
+        glView.requestRender()
+        aspectRatioButton.text = aspectButtonLabel(nextMode)
+        Log.i(TAG, "aspect_mode=${nextMode.id}")
+        updateDiagnostics()
+    }
+
+    private fun aspectButtonLabel(mode: AspectRatioMode): String = when (mode) {
+        AspectRatioMode.AUTO -> "Aspect: Auto"
+        AspectRatioMode.FIT_16_9 -> "Aspect: 16:9"
+        AspectRatioMode.FIT_4_3 -> "Aspect: 4:3"
+        AspectRatioMode.SQUARE_PIXELS -> "Aspect: 1:1"
+    }
+
+    private fun outputResolutionLabel(mode: OutputResolutionMode): String = "Output: ${mode.label}"
+
+    private fun strategyButtonLabel(strategy: FsrComparisonStrategy): String = "Strategy: ${when (strategy) {
+        FsrComparisonStrategy.AUTO -> "AUTO"
+        FsrComparisonStrategy.A_1080P_THEN_SYSTEM_SCALER -> "A · 1080P + system scale"
+        FsrComparisonStrategy.B_FSR_MULTISTAGE -> "B · staged FSR"
+        FsrComparisonStrategy.C_EASU_1080_LINEAR_FINAL -> "C · 1080P + linear 4K"
+        FsrComparisonStrategy.D_1080P_TO_2160P -> "D · 1080P → 4K EASU"
+    }}"
+
+    private fun cycleScalingStrategy() {
+        val next = selectedScalingStrategy.next()
+        selectedScalingStrategy = next
+        val saved = preferences.edit().putString("scaling_strategy", next.id).commit()
+        if (!saved) Log.e(TAG, "settings=scaling-strategy-save-failed id=${next.id}")
+        strategyButton.text = strategyButtonLabel(next)
+        strategyButton.contentDescription = "Rendering strategy: ${next.label}. Cycle AUTO and comparison pipelines A through D."
+        glView.queueEvent { renderer.applyScalingStrategy(next) }
+        if (selectedOutputResolutionMode == OutputResolutionMode.AUTO) {
+            requestOutputResolution(OutputResolutionMode.AUTO)
+        } else {
+            glView.requestRender()
+        }
+        Log.i(TAG, "scaling_strategy_selected=${next.id}")
+    }
+
+    private fun cycleOutputResolutionMode() {
+        setOutputResolutionMode(selectedOutputResolutionMode.next())
+    }
+
+    private fun setOutputResolutionMode(mode: OutputResolutionMode) {
+        selectedOutputResolutionMode = mode
+        val saved = preferences.edit().putString("output_resolution_mode", mode.id).commit()
+        if (!saved) Log.e(TAG, "settings=output-resolution-save-failed id=${mode.id}")
+        if (::outputResolutionButton.isInitialized) {
+            outputResolutionButton.text = outputResolutionLabel(mode)
+            outputResolutionButton.contentDescription = "Output resolution request: ${mode.label}. Cycle AUTO, 1080P, NATIVE 4K."
+        }
+        requestOutputResolution(mode)
+    }
+
+    private data class DisplayCapabilities(
+        val currentMode: PixelSize?,
+        val supportedModes: Set<PixelSize>,
+    )
+
+    private fun currentDisplayCapabilities(): DisplayCapabilities {
+        val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+            ?: return DisplayCapabilities(null, emptySet())
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            val point = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(point)
+            return DisplayCapabilities(PixelSize(point.x, point.y), emptySet())
+        }
+        return DisplayCapabilities(
+            currentMode = PixelSize(display.mode.physicalWidth, display.mode.physicalHeight),
+            supportedModes = display.supportedModes.map { PixelSize(it.physicalWidth, it.physicalHeight) }.toSet(),
+        )
+    }
+
+    private fun requestOutputResolution(mode: OutputResolutionMode) {
+        if (!::renderer.isInitialized || !::glView.isInitialized) return
+        val display = currentDisplayCapabilities()
+        val profileValidated = preferences.getBoolean(native4kProfileKey(), false)
+        val bufferSize = OutputResolutionPolicy.requestedSurfaceSize(
+            requested = mode,
+            currentDisplayMode = display.currentMode,
+            supportedDisplayModes = display.supportedModes,
+            native4kPerformanceValidated = profileValidated,
+        )
+        val previousCallbackSize = renderer.snapshot().surface
+        requestedSurfaceBufferSize = bufferSize
+        outputSurfaceDeadline.start(SystemClock.uptimeMillis())
+        fallbackRecoveryAttempts = 0
+        fallbackRecoveryTimedOut = false
+        outputSurfaceFallbackApplied = false
+        outputSurfaceFallbackReason = null
+        val policyReason = if (mode == OutputResolutionMode.AUTO && bufferSize != OutputResolutionPolicy.NATIVE_4K) {
+            "AUTO keeps the validated 1080P buffer until this device has a stable native-4K playback profile"
+        } else {
+            null
+        }
+        renderer.requestOutputResolution(mode, bufferSize, policyReason)
+        glView.holder.setFixedSize(bufferSize.width, bufferSize.height)
+        if (OutputResolutionPolicy.canValidateCurrentSurfaceImmediately(bufferSize, previousCallbackSize)) {
+            glView.queueEvent { renderer.validateOutputResolutionForCurrentSurface() }
+        }
+        glView.requestRender()
+        Log.i(
+            TAG,
+            "output_resolution_request requested=${mode.id} requested_buffer=$bufferSize " +
+                "reported_display_mode=${display.currentMode ?: "unavailable"} " +
+                "supports_4k=${OutputResolutionPolicy.NATIVE_4K in display.supportedModes} " +
+                "performance_profile=$profileValidated",
+        )
+        if (::outputResolutionButton.isInitialized) updateOutputResolutionButton()
+    }
+
+    private fun updateOutputResolutionButton() {
+        if (!::outputResolutionButton.isInitialized) return
+        outputResolutionButton.text = outputResolutionLabel(selectedOutputResolutionMode)
+        outputResolutionButton.contentDescription =
+            "Output resolution request: ${selectedOutputResolutionMode.label}. Cycle AUTO, 1080P, NATIVE 4K."
+    }
+
+    private fun native4kProfileKey(): String =
+        "native_4k_performance_validated_${Build.FINGERPRINT}_${selectedPreset.id}_${selectedScalingStrategy.id}"
+
+    private fun isEmulatorRenderer(state: RendererSnapshot): Boolean {
+        val hardware = Build.HARDWARE.lowercase()
+        val rendererName = state.gpuRenderer.lowercase()
+        return Build.FINGERPRINT.lowercase().contains("generic") ||
+            hardware in setOf("ranchu", "goldfish", "emulator", "qemu") ||
+            rendererName.contains("swiftshader") || rendererName.contains("llvmpipe")
+    }
+
+    private fun persistValidatedNative4kProfile(state: RendererSnapshot) {
+        if (!state.native4kPerformanceValidatedForAuto || state.surfaceFallbackRequested || isEmulatorRenderer(state)) return
+        if (preferences.getBoolean(native4kProfileKey(), false)) return
+        preferences.edit().putBoolean(native4kProfileKey(), true).apply()
+        Log.i(TAG, "native4k_auto_profile=persisted preset=${selectedPreset.id} renderer=${state.gpuRenderer}")
+    }
+
+    private fun registerWindowFrameMetrics() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N || frameMetricsListener != null) return
+        val listener = Window.OnFrameMetricsAvailableListener { _, metrics, droppedReports ->
+            val copied = FrameMetrics(metrics)
+            val gpuDuration = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                copied.getMetric(FrameMetrics.GPU_DURATION)
+            } else {
+                -1L
+            }
+            val vsyncTimestamp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                copied.getMetric(FrameMetrics.VSYNC_TIMESTAMP)
+            } else {
+                -1L
+            }
+            windowFrameMetrics.record(
+                totalDurationNs = copied.getMetric(FrameMetrics.TOTAL_DURATION),
+                gpuDurationNs = gpuDuration,
+                vsyncTimestampNs = vsyncTimestamp,
+                droppedReports = droppedReports,
+            )
+        }
+        window.addOnFrameMetricsAvailableListener(listener, mainHandler)
+        frameMetricsListener = listener
+    }
+
+    private fun unregisterWindowFrameMetrics() {
+        val listener = frameMetricsListener ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            window.removeOnFrameMetricsAvailableListener(listener)
+        }
+        frameMetricsListener = null
+    }
+
+    private fun resetToDemoClip() {
+        stopVideoPlayback()
+        selectedLocalVideoUri = null
+        decodedVideoSize = null
+        decodedVideoGeometry = null
+        currentVideoMetadataAvailable = false
+        preferences.edit().remove("local_video_uri").apply()
+        videoPlaybackError = null
+        videoSummary.text = "Reset to packaged test clip · opening decoder…"
+        Log.i(TAG, "video=reset-to-demo")
+        if (activityResumed) startVideoPlaybackIfReady()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        when (keyCode) {
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+            android.view.KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                toggleVideoPlayback()
+                return true
+            }
+            android.view.KeyEvent.KEYCODE_MEDIA_STOP -> {
+                stopVideoPlayback()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     private fun handleVideoPlaybackFailure(source: VideoTestSource, failure: Throwable) {
         Log.e(TAG, "video=error source=${source.assetPath}", failure)
-        videoPlaybackError = "${failure.message ?: failure.javaClass.simpleName}"
-        videoSummary.text = "Video input failed. Last decoded frame/chart remains visible."
+        val message = failure.message ?: failure.javaClass.simpleName
+        videoPlaybackError = message
+        val wasLocal = selectedLocalVideoUri != null
         stopVideoPlayback()
+        if (wasLocal) {
+            selectedLocalVideoUri = null
+            decodedVideoSize = null
+            decodedVideoGeometry = null
+            currentVideoMetadataAvailable = false
+            renderer.sourceVideoFps = currentVideoSource?.frameRate
+            preferences.edit().remove("local_video_uri").apply()
+            videoSummary.text = "Video input failed ($message). Reverting to packaged test clip."
+            if (activityResumed) {
+                mainHandler.postDelayed({ startVideoPlaybackIfReady() }, 500L)
+            }
+        } else {
+            videoSummary.text = "Video input failed. Last decoded frame/chart remains visible."
+        }
     }
 
     private fun stopVideoPlayback() {
+        videoRequestGeneration += 1L
         val player = mediaPlayer
         mediaPlayer = null
         if (player != null) runCatching { player.release() }
@@ -473,17 +990,33 @@ class MainActivity : Activity() {
     private fun updateDiagnostics() {
         if (!::renderer.isInitialized) return
         val state = renderer.snapshot()
-        modeSummary.text = state.error ?: "${selectedPreset.label} · ${state.mode.summary}"
+        handleOutputSurfaceFallback(state)
+        persistValidatedNative4kProfile(state)
+        val outputResolutionReason = if (fallbackRecoveryTimedOut) outputSurfaceFallbackReason else state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
+        modeSummary.text = when {
+            state.error != null -> state.error
+            outputResolutionReason != null -> "${selectedPreset.label} · output ${selectedOutputResolutionMode.label} requested; effective ${state.effectiveOutputResolution.label} · $outputResolutionReason"
+            state.scalingStrategyFallbackReason != null -> "${selectedPreset.label} · ${state.scalingStrategyFallbackReason}"
+            state.allocationFallbackReason != null -> "${selectedPreset.label} · ${state.allocationFallbackReason}"
+            state.qualityFallbackReason != null -> "${selectedPreset.label} · ${state.qualityFallbackReason}"
+            state.shaderFallbackReason != null -> "${selectedPreset.label} · ${state.shaderFallbackReason}"
+            state.runtimeFallbackReason != null -> "${selectedPreset.label} · ${state.runtimeFallbackReason}"
+            state.effectiveMode != state.mode -> "${selectedPreset.label} requested · using ${state.effectiveMode.label}"
+            else -> "${selectedPreset.label} · ${state.mode.summary}"
+        }
 
-        val displayMode = currentDisplayMode()
-        val surfaceText = if (state.surface.width > 0) "GL surface ${state.surface}" else "GL surface pending"
+        val displayCapabilities = currentDisplayCapabilities()
+        val displayMode = displayCapabilities.currentMode?.toString() ?: "unavailable"
+        val surfaceText = if (state.surface.width > 0) "GL callback ${state.surface}" else "GL callback pending"
+        val eglText = state.eglSurface?.toString() ?: "unavailable"
+        val viewText = if (::glView.isInitialized && glView.width > 0) "${glView.width}×${glView.height}" else "pending"
         val targetText = if (state.processedTarget.width > 0) "processed target ${state.processedTarget}" else "processed target pending"
         val actualSource = decodedVideoSize ?: state.source
-        val sourceText = if (actualSource.width > 0) "source $actualSource" else "source pending"
-        resolutionSummary.text = "Display mode $displayMode  ·  $sourceText → $targetText  ·  $surfaceText"
+        val geoSummary = decodedVideoGeometry?.summary(selectedAspectMode) ?: "$actualSource"
+        resolutionSummary.text = "Display mode $displayMode  ·  ${selectedOutputResolutionMode.label} → ${state.effectiveOutputResolution.label}  ·  view $viewText · $surfaceText / EGL $eglText · $geoSummary → $targetText"
 
         gpuSummary.text = if (state.glVersion.isNotBlank()) {
-            "${state.glVersion}  ·  ${state.gpuRenderer}  ·  max texture ${state.maxTextureSize}px"
+            "${state.glVersion}  ·  ${state.gpuRenderer}  ·  texture ${state.maxTextureSize}px · renderbuffer ${state.maxRenderbufferSize}px · viewport ${state.maxViewportSize}"
         } else {
             state.gpuRenderer
         }
@@ -493,62 +1026,217 @@ class MainActivity : Activity() {
             state.videoInputError != null -> "Video input error: ${state.videoInputError}. Generated chart is retained as fallback."
             state.decodedVideoFrames > 0L -> {
                 val dimensions = decodedVideoSize?.let { " · ${it.width}×${it.height}" } ?: ""
-                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · uploads ${state.decodedVideoFrames}/${state.videoFrameCallbacks} callbacks · skipped≈${state.estimatedSkippedFrames}"
+                "Decoded ${inputLabelForDiagnostics(state.videoSource)}$dimensions · consumed ${state.decodedVideoFrames}/${state.videoFrameCallbacks} SurfaceTexture callbacks · skipped≈${state.estimatedSkippedFrames}"
             }
             else -> "Waiting for the first decoded frame from ${state.videoSource}"
         }
 
-        val renderFps = if (state.fps > 0f) "%.1f".format(state.fps) else "—"
-        val inputFps = if (state.inputFps > 0f) "%.1f".format(state.inputFps) else "—"
+        val sourceFps = state.sourceVideoFps?.let { "%.1f".format(it) } ?: "N/A"
+        val surfaceCallbackFps = state.surfaceTextureCallbackFps?.let { "%.1f".format(it) } ?: "—"
+        val renderFps = if (state.rendererCallbackFps > 0f) "%.1f".format(state.rendererCallbackFps) else "—"
         val frameMs = state.averageFrameIntervalMs?.let { "%.1f".format(it) } ?: "—"
-        val submitMs = state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"
-        metricsSummary.text = "Render $renderFps fps · OES upload $inputFps fps · frame avg $frameMs ms · submit $submitMs ms"
+        val submitMs = state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"
+        val gpuMs = state.gpuExecutionMs?.let { "%.2f".format(it) } ?: "—"
+        val appFrameMetrics = windowFrameMetrics.snapshot()
+        val windowTotalMs = appFrameMetrics.averageTotalDurationMs?.let { "%.2f".format(it) } ?: "—"
+        val windowGpuMs = appFrameMetrics.averageGpuDurationMs?.let { "%.2f".format(it) } ?: "N/A"
+        metricsSummary.text = "Source $sourceFps fps · SurfaceTexture $surfaceCallbackFps · renderer $renderFps · CPU $submitMs ms · GL GPU $gpuMs ms · window total/GPU $windowTotalMs/$windowGpuMs ms · frame avg $frameMs ms"
         updatePresetButtons()
+        updateOutputResolutionButton()
+    }
+
+    private fun handleOutputSurfaceFallback(state: RendererSnapshot) {
+        if (state.surfaceFallbackRequested && !outputSurfaceFallbackApplied) {
+            val reason = state.outputResolutionFallbackReason ?: "4K surface/render-target validation failed"
+            apply1080SurfaceFallback(reason)
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        if (requestedSurfaceBufferSize == OutputResolutionPolicy.NATIVE_4K && !outputSurfaceFallbackApplied) {
+            if (outputSurfaceDeadline.expired(state.native4kSurfaceVerified, now)) {
+                apply1080SurfaceFallback("4K EGL surface was not confirmed within 5 seconds; reverted to a 1080P buffer")
+            }
+        } else if (!outputSurfaceFallbackApplied && requestedSurfaceBufferSize == OutputResolutionPolicy.FULL_HD) {
+            val timedOut = shouldReportUnverified1080(outputSurfaceDeadline, state.effectiveOutputResolution, now)
+            if (timedOut && !fallbackRecoveryTimedOut) {
+                outputSurfaceFallbackReason = listOfNotNull(
+                    state.outputResolutionFallbackReason,
+                    "1080P buffer was not verified within 5 seconds",
+                ).joinToString("; ")
+                Log.w(TAG, "output_resolution_unverified reason=$outputSurfaceFallbackReason")
+            } else if (!timedOut && state.effectiveOutputResolution == EffectiveOutputResolution.P1080) {
+                outputSurfaceFallbackReason = state.outputResolutionFallbackReason
+            }
+            fallbackRecoveryTimedOut = timedOut
+        } else if (outputSurfaceFallbackApplied) {
+            val verified = state.effectiveOutputResolution == EffectiveOutputResolution.P1080
+            if (verified && fallbackRecoveryTimedOut) {
+                fallbackRecoveryTimedOut = false
+                outputSurfaceFallbackReason = state.outputResolutionFallbackReason
+            }
+            if (!fallbackRecoveryTimedOut && outputSurfaceDeadline.expired(verified, now)) {
+                if (fallbackRecoveryAttempts == 0) {
+                    fallbackRecoveryAttempts++
+                    outputSurfaceDeadline.start(now)
+                    glView.holder.setFixedSize(OutputResolutionPolicy.FULL_HD.width, OutputResolutionPolicy.FULL_HD.height)
+                    glView.queueEvent { renderer.validateOutputResolutionForCurrentSurface() }
+                    glView.requestRender()
+                } else {
+                    fallbackRecoveryTimedOut = true
+                    outputSurfaceFallbackReason = (outputSurfaceFallbackReason ?: "4K fallback") +
+                        "; 1080P fallback buffer was not verified after retry"
+                    Log.w(TAG, "output_resolution_fallback_unverified reason=$outputSurfaceFallbackReason")
+                }
+            }
+        }
+    }
+
+    private fun apply1080SurfaceFallback(reason: String) {
+        outputSurfaceFallbackApplied = true
+        outputSurfaceFallbackReason = reason
+        outputSurfaceDeadline.start(SystemClock.uptimeMillis())
+        fallbackRecoveryAttempts = 0
+        fallbackRecoveryTimedOut = false
+        preferences.edit().remove(native4kProfileKey()).apply()
+        val previousCallbackSize = renderer.snapshot().surface
+        requestedSurfaceBufferSize = OutputResolutionPolicy.FULL_HD
+        renderer.requestOutputResolution(selectedOutputResolutionMode, requestedSurfaceBufferSize, reason)
+        glView.holder.setFixedSize(requestedSurfaceBufferSize.width, requestedSurfaceBufferSize.height)
+        if (OutputResolutionPolicy.canValidateCurrentSurfaceImmediately(requestedSurfaceBufferSize, previousCallbackSize)) {
+            glView.queueEvent { renderer.validateOutputResolutionForCurrentSurface() }
+        }
+        glView.requestRender()
+        Log.w(TAG, "output_resolution_fallback requested=${selectedOutputResolutionMode.id} fallback_buffer=1080p effective=unverified reason=$reason")
     }
 
     private fun showDiagnostics() {
         val state = renderer.snapshot()
         val actualSource = decodedVideoSize ?: state.source
-        val viewport = RenderPolicy.contentViewport(state.surface, actualSource)
+        val viewport = if (state.geometry.codedWidth > 0 && state.geometry.codedHeight > 0) {
+            RenderPolicy.contentViewport(state.surface, state.geometry, state.aspectMode)
+        } else {
+            RenderPolicy.contentViewport(state.surface, actualSource)
+        }
+        val displayCapabilities = currentDisplayCapabilities()
+        val compositorScaleDescription = when {
+            !state.systemScalerExpected -> "GPU processing target"
+            displayCapabilities.currentMode?.let { it.width > state.surface.width || it.height > state.surface.height } == true ->
+                "Android compositor scaling to a larger reported mode is expected; panel presentation is unverified"
+            else -> "1080P EGL buffer; no larger Android display mode is reported"
+        }
         val message = buildString {
             appendLine("Preset: ${selectedPreset.label} (${state.mode.id})")
+            appendLine("Effective processing: ${state.effectiveMode.id}")
+            appendLine("Native EASU planner: ${NativeEasuStagePlanner.status} · calls=${NativeEasuStagePlanner.nativePlannerCalls} · last JNI/array CPU wall=${NativeEasuStagePlanner.lastNativePlannerCallMicros} µs (planning only; not GPU/frame time)")
+            appendLine("Output resolution requested: ${state.requestedOutputResolution.id} · effective: ${state.effectiveOutputResolution.id}")
+            appendLine("SurfaceView view bounds: ${glView.width}×${glView.height} · requested buffer: $requestedSurfaceBufferSize")
+            appendLine("GLSurfaceView callback: ${state.surface} · EGL window-surface query: ${state.eglSurface ?: "unavailable"}")
+            appendLine("Android-reported active display mode: ${displayCapabilities.currentMode ?: "unavailable"}")
+            val supportedModesText = displayCapabilities.supportedModes.takeIf { it.isNotEmpty() }?.joinToString() ?: "unavailable"
+            appendLine("Android-reported supported modes (may include synthetic modes): $supportedModesText")
+            appendLine("Native-4K EGL/window surface validation: ${if (state.native4kSurfaceVerified) "passed for this surface/session" else "not verified"}")
+            val fsrFramebufferStatus = when {
+                !state.mode.usesEasu -> "not required by the requested processing mode"
+                state.native4kSurfaceVerified -> "complete for the validated processing target"
+                else -> "not verified at a native-4K processing target"
+            }
+            appendLine("FSR processing framebuffer: $fsrFramebufferStatus")
+            appendLine("Native-4K cadence profile: session ${if (state.native4kPerformanceValidatedForAuto) "validated" else "not validated"} · persisted for this device/preset/strategy=${preferences.getBoolean(native4kProfileKey(), false)}")
+            val outputFallbackReason = if (fallbackRecoveryTimedOut) outputSurfaceFallbackReason else state.outputResolutionFallbackReason ?: outputSurfaceFallbackReason
+            outputFallbackReason?.let { appendLine("Output-resolution fallback/policy: $it") }
+            val surfaceRgbaBytes = state.eglSurface?.let { it.width.toLong() * it.height.toLong() * 4L }
+            val surfaceEstimate = surfaceRgbaBytes?.let { "%.1f".format(it / (1024f * 1024f)) + " MiB" } ?: "N/A"
+            appendLine("EGL surface single-buffer RGBA8888 estimate: $surfaceEstimate · buffer count/actual driver allocation not measured")
+            appendLine("Physical panel presentation: unverified; display-mode reports are not scanout timestamps")
+            state.allocationFallbackReason?.let { appendLine("GPU fallback: $it") }
+            state.qualityFallbackReason?.let { appendLine("Quality fallback: $it") }
+            state.shaderFallbackReason?.let { appendLine("Shader fallback: $it") }
+            state.runtimeFallbackReason?.let { appendLine("Runtime fallback: $it") }
+            val externalEasuStatus = when {
+                !state.externalEasuAvailable -> "shader unavailable; RGBA-copy fallback"
+                state.externalEasuRejected -> "rejected by pixel comparison; RGBA-copy fallback"
+                state.externalEasuValidated -> "pixel-equivalent in this session"
+                else -> "not validated; RGBA-copy fallback"
+            }
+            appendLine("Video input route: ${state.videoInputPath} · direct OES EASU $externalEasuStatus")
+            val rcasPath = when {
+                !state.effectiveMode.usesRcas -> "disabled"
+                state.geometry.codedWidth > 0 &&
+                    RenderPolicy.requiresRcasIntermediate(state.processedTarget, state.surface, state.geometry, state.aspectMode) -> "separate RGBA scratch target"
+                state.geometry.codedWidth <= 0 &&
+                    RenderPolicy.requiresRcasIntermediate(state.processedTarget, state.surface, actualSource) -> "separate RGBA scratch target"
+                else -> "direct into aspect-fit display viewport"
+            }
+            appendLine("RCAS destination: $rcasPath")
+            appendLine("Benchmark pipeline: ${state.requestedScalingStrategy.label} → ${state.effectiveScalingStrategy.label} · $compositorScaleDescription")
+            state.scalingStrategyFallbackReason?.let { appendLine("Strategy fallback: $it") }
             appendLine("Input: $actualSource · output: ${state.processedTarget} · surface: ${state.surface}")
             appendLine("EASU pass count: ${state.easuStageCount} · aspect-fit viewport: ${viewport.width}×${viewport.height} at ${viewport.left},${viewport.top}")
+            val passSizes = state.shaderPassOutputSizes.joinToString(" → ") { "${it.width}×${it.height}" }.ifEmpty { "none" }
+            val shaderWriteMiB = state.estimatedRgbaWriteBytesPerFrame / (1024f * 1024f)
+            appendLine("Planned pipeline shader output sizes: $passSizes · logical RGBA write estimate/frame: ${"%.1f".format(shaderWriteMiB)} MiB (includes RGBA-copy/NR/FSR outputs; not measured bandwidth or EGL presentation)")
             val textureMiB = state.estimatedRgbaTextureBytes / (1024f * 1024f)
             val memoryWarning = if (state.estimatedRgbaTextureBytes > RenderPolicy.MAX_RGBA_TEXTURE_BYTES) " · OVER budget (source memory irreducible)" else ""
-            appendLine("RGBA render-target estimate: ${"%.1f".format(textureMiB)} MiB / 128 MiB budget$memoryWarning · excludes decoder/driver memory")
+            appendLine("Planned app-owned RGBA targets: ${"%.1f".format(textureMiB)} MiB / 128 MiB logical budget$memoryWarning · driver alignment/decoder memory excluded")
+            appendLine("Aspect ratio mode: ${state.aspectMode.label} · display aspect: ${state.geometry.aspectLabel(state.aspectMode)}")
+            val sarStatus = when {
+                state.geometry.sarIsExplicit -> "metadata"
+                state.geometry.sarWidth != 1 || state.geometry.sarHeight != 1 -> "SD-resolution heuristic"
+                else -> "not reported"
+            }
+            appendLine("Sample aspect ratio: ${state.geometry.sarWidth}:${state.geometry.sarHeight} · $sarStatus")
+            appendLine("Colorimetry: ${state.geometry.colorStandardLabel} · ${state.geometry.colorRangeLabel} · ${state.geometry.colorTransferLabel}")
             appendLine("Decoder path: $decoderDescription")
-            appendLine("Input frame callbacks: ${state.videoFrameCallbacks} · uploaded: ${state.decodedVideoFrames}")
+            val appFrameMetrics = windowFrameMetrics.snapshot()
+            val windowTotal = appFrameMetrics.averageTotalDurationMs?.let { "%.3f".format(it) } ?: "N/A"
+            val windowMax = appFrameMetrics.maximumTotalDurationMs?.let { "%.3f".format(it) } ?: "N/A"
+            val windowGpu = appFrameMetrics.averageGpuDurationMs?.let { "%.3f".format(it) } ?: "N/A (API/driver unavailable)"
+            val windowVsyncInterval = appFrameMetrics.averageVsyncIntervalMs?.let { "%.3f".format(it) } ?: "N/A"
+            appendLine("Android Window FrameMetrics: n=${appFrameMetrics.samples} dropped=${appFrameMetrics.droppedReports} total avg/max=${windowTotal}/${windowMax} ms · window GPU avg=$windowGpu ms")
+            appendLine("Window FrameMetrics VSYNC interval avg=$windowVsyncInterval ms (vsync timing, not physical presentation or display FPS)")
+            appendLine("SurfaceTexture callbacks: ${state.videoFrameCallbacks} · frames consumed: ${state.decodedVideoFrames}")
             appendLine("Coalesced callbacks (estimated skipped): ${state.estimatedSkippedFrames}")
             appendLine("Decoder-reported lag events: ${state.decoderLagEvents}")
-            appendLine("Input callback cadence: ${"%.2f".format(state.inputFps)} fps")
-            appendLine("Render callback cadence: ${"%.2f".format(state.fps)} fps")
+            appendLine("Nominal source video FPS: ${state.sourceVideoFps?.let { "%.2f".format(it) + " fps" } ?: "N/A (unknown for this local track)"}")
+            appendLine("SurfaceTexture callback cadence: ${state.surfaceTextureCallbackFps?.let { "%.2f".format(it) } ?: "—"} fps")
+            appendLine("Consumed SurfaceTexture timestamp cadence: ${state.consumedMediaTimestampFps?.let { "%.2f".format(it) } ?: "—"} fps")
+            appendLine("Renderer callback cadence: ${"%.2f".format(state.rendererCallbackFps)} fps (not display FPS)")
             appendLine("Frame interval ms: last=${state.lastFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, avg=${state.averageFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}, max=${state.maximumFrameIntervalMs?.let { "%.2f".format(it) } ?: "—"}")
-            appendLine("CPU GL-submit time: ${state.renderSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms")
-            appendLine("Sparse submit-to-glFinish sample: ${state.synchronizedFrameMs?.let { "%.2f".format(it) } ?: "—"} ms")
+            appendLine("CPU GL-submit last onDrawFrame body: ${state.cpuGlSubmitMs?.let { "%.2f".format(it) } ?: "—"} ms (CPU wall time, not GPU execution; driver calls may stall; excludes EGL swap)")
+            fun cpuWindow(summary: CpuSubmitSummary?): String = summary?.let {
+                "${"%.3f".format(it.averageMs)}/${"%.3f".format(it.maximumMs)} ms, n=${it.samples}"
+            } ?: "—"
+            appendLine("CPU submit windows avg/max: frame=${cpuWindow(state.cpuTimings.frameSubmit)} · input=${cpuWindow(state.cpuTimings.inputUpdate)}")
+            appendLine("CPU pass submit avg/max: NR=${cpuWindow(state.cpuTimings.denoise)} · EASU=${cpuWindow(state.cpuTimings.easu)} · RCAS=${cpuWindow(state.cpuTimings.rcas)} · present=${cpuWindow(state.cpuTimings.present)}")
+            val easuStageTimings = state.cpuTimings.easuStages.mapIndexed { index, summary ->
+                "pass$index=${cpuWindow(summary)}"
+            }.joinToString(" · ").ifEmpty { "N/A" }
+            appendLine("CPU per-EASU-pass submit avg/max: $easuStageTimings (CPU/driver wall time, not GPU time)")
+            appendLine("CPU final linear-scale submit avg/max: ${cpuWindow(state.cpuTimings.linearFinalScale)}")
+            val gpuText = when {
+                !state.gpuTimerQueryAvailable -> "N/A (GL_EXT_disjoint_timer_query unsupported)"
+                state.gpuExecutionMs == null -> "waiting for asynchronous timer sample"
+                else -> "${"%.3f".format(state.gpuExecutionMs)} ms"
+            }
+            appendLine("GPU execution time: $gpuText")
+            appendLine("Display presentation timing: ${if (state.displayPresentationTimingAvailable) "available" else "N/A (no presentation timestamp source)"}")
+            appendLine("Decoded-to-presentation latency: N/A (no paired EGL/display presentation timestamps)")
             appendLine("Renderer: ${state.gpuRenderer}")
-            appendLine("GLES: ${state.glVersion} · max texture ${state.maxTextureSize}")
-            append("Skipped-frame and FPS values are renderer callback estimates, not hardware decoder counters or display-present timing.")
+            appendLine("GLES: ${state.glVersion} · max texture ${state.maxTextureSize} · max renderbuffer ${state.maxRenderbufferSize} · max viewport ${state.maxViewportSize}")
+            append("Coalesced callback counts and renderer cadence are estimates, not decoder drop counters or physical-display presentation measurements.")
         }
         android.app.AlertDialog.Builder(this)
             .setTitle("NightKnight · Diagnostics")
             .setMessage(message)
             .setPositiveButton("Close", null)
+            .setOnDismissListener {
+                diagnosticsButton.requestFocus()
+            }
             .show()
+        Log.i(TAG, "diagnostics=open")
     }
 
-    @Suppress("DEPRECATION")
-    private fun currentDisplayMode(): String {
-        val display = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
-            ?: return "unavailable"
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            "${display.mode.physicalWidth}×${display.mode.physicalHeight}"
-        } else {
-            val point = android.graphics.Point()
-            display.getRealSize(point)
-            "${point.x}×${point.y}"
-        }
-    }
+    private fun currentDisplayMode(): String = currentDisplayCapabilities().currentMode?.toString() ?: "unavailable"
 
     private fun enterImmersiveMode() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -574,9 +1262,16 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun controlPanelLayoutParams() = FrameLayout.LayoutParams(dp(680), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-        gravity = Gravity.BOTTOM or Gravity.START
-        setMargins(dp(32), dp(20), dp(20), dp(28))
+    private fun controlPanelLayoutParams(): FrameLayout.LayoutParams {
+        val startInset = dp(32)
+        val endInset = dp(20)
+        val availableWidth = (resources.displayMetrics.widthPixels - startInset - endInset).coerceAtLeast(dp(1))
+        val panelWidth = minOf(dp(680), availableWidth)
+        return FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            // WRAP_CONTENT gives the ScrollView an AT_MOST height from the root after these insets.
+            setMargins(startInset, dp(20), endInset, dp(28))
+        }
     }
 
     private fun text(value: String, sizeSp: Int, color: Int, bold: Boolean = false, top: Int = 0) = TextView(this).apply {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/nkscale-core", "crates/nkscale-ui"]
+members = ["crates/nkscale-core", "crates/nkscale-ui", "crates/nightknight-render-core"]
 resolver = "3"
 
 [workspace.package]

@@ -12,6 +12,8 @@ internal data class PixelSize(val width: Int, val height: Int) {
 
 internal data class PixelRect(val left: Int, val top: Int, val width: Int, val height: Int)
 
+internal data class GlViewport(val x: Int, val y: Int, val width: Int, val height: Int)
+
 internal object RenderPolicy {
     /** Soft working-set budget for app-owned RGBA8 render targets; source allocations are irreducible. */
     const val MAX_RGBA_TEXTURE_BYTES = 128L * 1024L * 1024L
@@ -27,7 +29,14 @@ internal object RenderPolicy {
         2.0f.pow(-(sliderProgress.coerceIn(0, 20) / 4.0f))
 
     /** Select the largest aspect-preserving output that fits display and GLES texture limits. */
-    fun targetForSource(surface: PixelSize, source: PixelSize, maxTextureSize: Int): PixelSize {
+    fun targetForSource(
+        surface: PixelSize,
+        source: PixelSize,
+        maxTextureSize: Int,
+        includeNoiseReduction: Boolean = true,
+        includeEasu: Boolean = true,
+        includeRcas: Boolean = true,
+    ): PixelSize {
         if (surface.width <= 0 || surface.height <= 0 || source.width <= 0 || source.height <= 0 || maxTextureSize <= 0) {
             return PixelSize(0, 0)
         }
@@ -45,7 +54,14 @@ internal object RenderPolicy {
 
         var candidate = ideal
         repeat(16) {
-            val estimate = estimatedRgbaTextureBytes(source, candidate, surface)
+            val estimate = estimatedRgbaTextureBytes(
+                source,
+                candidate,
+                surface,
+                includeNoiseReduction = includeNoiseReduction,
+                includeEasu = includeEasu,
+                includeRcas = includeRcas,
+            )
             if (estimate <= MAX_RGBA_TEXTURE_BYTES) return candidate
             val reduction = minOf(0.90, sqrt(MAX_RGBA_TEXTURE_BYTES.toDouble() / estimate) * 0.95).toFloat()
             val next = PixelSize(
@@ -58,23 +74,34 @@ internal object RenderPolicy {
         return candidate
     }
 
-    /**
-     * Estimate simultaneously allocated RGBA8 render-target bytes, including source+NR,
-     * output, optional separate RCAS target, and two reusable EASU intermediate textures.
-     * Decoder/OES buffers, driver alignment, UI and compositor memory are excluded.
+    /** Exact estimate for simultaneously allocated, app-owned RGBA8 targets in the selected render path.
+     * Includes source plus optional NR, EASU output and reusable intermediates, and an RCAS scratch target
+     * only when needed. Decoder/OES buffers, driver alignment, UI and compositor memory are excluded.
      */
-    fun estimatedRgbaTextureBytes(source: PixelSize, target: PixelSize, surface: PixelSize): Long {
+    fun estimatedRgbaTextureBytes(
+        source: PixelSize,
+        target: PixelSize,
+        surface: PixelSize,
+        includeNoiseReduction: Boolean = true,
+        includeEasu: Boolean = true,
+        includeRcas: Boolean = true,
+        includeSourceTexture: Boolean = true,
+        rcasIntermediateRequired: Boolean? = null,
+    ): Long {
         if (source.width <= 0 || source.height <= 0 || target.width <= 0 || target.height <= 0) return 0L
         fun bytes(size: PixelSize) = size.width.toLong() * size.height * 4L
-        var total = bytes(source) * 2L + bytes(target)
-        if (target != surface) total += bytes(target)
-        val intermediateStages = easuStages(source, target).dropLast(1)
-        if (intermediateStages.isNotEmpty()) {
-            val intermediateSize = PixelSize(
-                intermediateStages.maxOf { it.width },
-                intermediateStages.maxOf { it.height },
-            )
-            total += bytes(intermediateSize) * minOf(2, intermediateStages.size)
+
+        var total = if (includeSourceTexture) {
+            bytes(source) * if (includeNoiseReduction) 2L else 1L
+        } else {
+            0L
+        }
+        if (includeEasu) {
+            total += bytes(target)
+            if (includeRcas && (rcasIntermediateRequired ?: requiresRcasIntermediate(target, surface, source))) {
+                total += bytes(target)
+            }
+            total += easuIntermediateSizes(source, target).sumOf(::bytes)
         }
         return total
     }
@@ -90,19 +117,169 @@ internal object RenderPolicy {
         return PixelRect((surface.width - width) / 2, (surface.height - height) / 2, width, height)
     }
 
+    /** Center the video geometry (SAR, rotation, and DAR mode) in the display with exact DAR aspect-fitting. */
+    fun contentViewport(
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+    ): PixelRect {
+        if (surface.width <= 0 || surface.height <= 0 || geometry.codedWidth <= 0 || geometry.codedHeight <= 0) {
+            return PixelRect(0, 0, 0, 0)
+        }
+        val dar = geometry.displayAspectRatio(aspectMode)
+        val surfaceAspect = surface.width.toDouble() / surface.height.toDouble()
+        val width: Int
+        val height: Int
+        if (dar >= surfaceAspect) {
+            width = surface.width
+            height = max(1, (surface.width / dar).roundToInt())
+        } else {
+            height = surface.height
+            width = max(1, (surface.height * dar).roundToInt())
+        }
+        return PixelRect((surface.width - width) / 2, (surface.height - height) / 2, width, height)
+    }
+
+    /** Select the largest aspect-preserving output under GLES and working-set limits. */
+    fun targetForGeometry(
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        maxTextureSize: Int,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+        sourceTextureSize: PixelSize = geometry.orientedSize,
+        includeNoiseReduction: Boolean = true,
+        includeEasu: Boolean = true,
+        includeRcas: Boolean = true,
+    ): PixelSize {
+        val displaySize = geometry.effectiveDisplaySize(aspectMode)
+        if (surface.width <= 0 || surface.height <= 0 || displaySize.width <= 0 || displaySize.height <= 0 ||
+            sourceTextureSize.width <= 0 || sourceTextureSize.height <= 0 || maxTextureSize <= 0
+        ) {
+            return PixelSize(0, 0)
+        }
+        val scale = minOf(
+            surface.width.toFloat() / displaySize.width,
+            surface.height.toFloat() / displaySize.height,
+            maxTextureSize.toFloat() / displaySize.width,
+            maxTextureSize.toFloat() / displaySize.height,
+        )
+        val ideal = PixelSize(
+            max(1, (displaySize.width * scale).roundToInt()),
+            max(1, (displaySize.height * scale).roundToInt()),
+        )
+        if (sourceTextureSize.width > ideal.width || sourceTextureSize.height > ideal.height) return ideal
+
+        var candidate = ideal
+        repeat(16) {
+            val estimate = estimatedRgbaTextureBytes(
+                source = sourceTextureSize,
+                target = candidate,
+                surface = surface,
+                includeNoiseReduction = includeNoiseReduction,
+                includeEasu = includeEasu,
+                includeRcas = includeRcas,
+                rcasIntermediateRequired = requiresRcasIntermediate(candidate, surface, geometry, aspectMode),
+            )
+            if (estimate <= MAX_RGBA_TEXTURE_BYTES) return candidate
+            val reduction = minOf(0.90, sqrt(MAX_RGBA_TEXTURE_BYTES.toDouble() / estimate) * 0.95).toFloat()
+            val next = PixelSize(
+                max(sourceTextureSize.width, (candidate.width * reduction).roundToInt()),
+                max(sourceTextureSize.height, (candidate.height * reduction).roundToInt()),
+            )
+            if (next == candidate) return candidate
+            candidate = next
+        }
+        return candidate
+    }
+
     /** Generate an EASU chain with no stage exceeding 2× per axis. */
-    fun easuStages(source: PixelSize, target: PixelSize): List<PixelSize> {
+    fun easuStages(source: PixelSize, target: PixelSize): List<PixelSize> =
+        NativeEasuStagePlanner.easuStages(source, target)
+
+    /** Reference policy retained as a safe fallback and parity-test oracle for the Rust planner. */
+    internal fun easuStagesFallback(source: PixelSize, target: PixelSize): List<PixelSize> {
         if (source.width <= 0 || source.height <= 0 || target.width <= 0 || target.height <= 0) return emptyList()
         if (target.width < source.width || target.height < source.height) return listOf(target)
         val stages = mutableListOf<PixelSize>()
         var current = source
         while (current != target) {
-            val next = PixelSize(minOf(target.width, current.width * 2), minOf(target.height, current.height * 2))
+            val next = PixelSize(
+                minOf(target.width.toLong(), current.width.toLong() * 2L).toInt(),
+                minOf(target.height.toLong(), current.height.toLong() * 2L).toInt(),
+            )
             if (next == current) return emptyList()
             stages += next
             current = next
         }
         return stages
+    }
+
+    /** Maximum dimensions needed by the two reusable ping-pong texture slots. */
+    fun easuIntermediateSizes(source: PixelSize, target: PixelSize): List<PixelSize> =
+        easuIntermediateSizesForStages(easuStagesFallback(source, target))
+
+    /** Derive reusable buffers from the already-selected stage chain without replanning via JNI. */
+    fun easuIntermediateSizesForStages(stages: List<PixelSize>): List<PixelSize> {
+        val slots = arrayOfNulls<PixelSize>(2)
+        stages.dropLast(1).forEachIndexed { index, stage ->
+            val slot = index % slots.size
+            val current = slots[slot]
+            slots[slot] = if (current == null) {
+                stage
+            } else {
+                PixelSize(max(current.width, stage.width), max(current.height, stage.height))
+            }
+        }
+        return slots.filterNotNull()
+    }
+
+    /** Whether RCAS needs a same-sized scratch texture before aspect-fit presentation. */
+    fun requiresRcasIntermediate(target: PixelSize, surface: PixelSize, source: PixelSize): Boolean {
+        if (target.width <= 0 || target.height <= 0) return true
+        val viewport = contentViewport(surface, source)
+        return viewport.width <= 0 || viewport.height <= 0 ||
+            target != PixelSize(viewport.width, viewport.height)
+    }
+
+    /** Geometry-aware RCAS routing, including SAR and user-selected aspect overrides. */
+    fun requiresRcasIntermediate(
+        target: PixelSize,
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+    ): Boolean {
+        if (target.width <= 0 || target.height <= 0) return true
+        val viewport = contentViewport(surface, geometry, aspectMode)
+        return viewport.width <= 0 || viewport.height <= 0 ||
+            target != PixelSize(viewport.width, viewport.height)
+    }
+
+    /** Android's GL viewport uses a bottom-left origin; this maps the centered fit rectangle. */
+    fun glViewportForContent(surface: PixelSize, source: PixelSize): GlViewport {
+        val viewport = contentViewport(surface, source)
+        if (viewport.width <= 0 || viewport.height <= 0) return GlViewport(0, 0, 0, 0)
+        return GlViewport(
+            x = viewport.left,
+            y = surface.height - viewport.top - viewport.height,
+            width = viewport.width,
+            height = viewport.height,
+        )
+    }
+
+    /** Geometry-aware GL viewport using the selected DAR, not coded pixel ratio. */
+    fun glViewportForContent(
+        surface: PixelSize,
+        geometry: VideoGeometry,
+        aspectMode: AspectRatioMode = AspectRatioMode.AUTO,
+    ): GlViewport {
+        val viewport = contentViewport(surface, geometry, aspectMode)
+        if (viewport.width <= 0 || viewport.height <= 0) return GlViewport(0, 0, 0, 0)
+        return GlViewport(
+            x = viewport.left,
+            y = surface.height - viewport.top - viewport.height,
+            width = viewport.width,
+            height = viewport.height,
+        )
     }
 
     /** Keep the intermediate texture within the device's reported GLES limit. */
