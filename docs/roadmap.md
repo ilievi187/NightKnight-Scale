@@ -50,3 +50,37 @@ Completion requires the runtime checks above. The milestone is still in progress
 ## Future, explicitly not V1
 
 Temporal upscaling requires its needed motion/depth inputs. Frame generation is separate from spatial FSR and may not be claimed without a real implementation and validated pacing. Anime4K, video players, HDR, game-launcher integrations, streaming, and additional compositors remain future work.
+
+## M6 — Android TV shader demo (in progress)
+
+- [x] Add a TV-launchable Android module in the existing repository with Leanback metadata, touchscreen-optional manifest, and OpenGL ES 3 requirement.
+- [x] Implement a foreground, fullscreen GLES demo with generated chart fallback, an EASU pass, a separate RCAS pass, and original bilinear comparison.
+- [x] Add D-pad-focusable mode controls and a remote-adjustable RCAS sharpness slider.
+- [x] Report Android display mode, GL surface / processed dimensions, renderer capability, render-callback FPS, and a sparse synchronized completion sample with its scope labeled.
+- [x] Add pure policy tests for source/target sizing and RCAS strength mapping; compile all standalone GLSL ES shaders with `glslangValidator`.
+- [x] Add hosted Android Gradle/JVM CI with JDK 17, SDK Platform 36 and Build Tools 35+; first `testDebugUnitTest assembleDebug` run passed and produced a debug APK.
+- [x] Verify the CI APK SHA-256 and seven-day artifact upload. Run `40773983229` passed and the downloaded APK matched the logged digest and passed ZIP integrity.
+- [ ] Run a local Android Gradle build; the current host lacks Gradle, Android SDK and JDK 17.
+- [x] Run hosted API 36 Android TV 1080p emulator smoke using Google SwiftShader GLES 3.0: activity launch, shader readiness, 960×540→1920×1080 chart output, render FPS, D-pad Original/Enhanced switching, RCAS slider 8→9, and cropped A/B pixel difference all passed. This is emulator/software-renderer evidence only.
+- [x] Generate and package deterministic 30 fps H.264 test clips at 640×360, 960×540, 1280×720 and 1920×1080 with a non-overwriting generator. Each clip fully decoded locally with FFmpeg.
+- [x] Validate MediaPlayer → external OES SurfaceTexture → RGBA input → EASU/RCAS on hosted API 36 Android TV AVD. Runtime smoke saw decoded-frame upload/progression, remote pause/play, D-pad A/B, RCAS 8→9, and pixel differences between two moving frames plus enhanced/bilinear from the same paused frame. SwiftShader software GLES only.
+- [ ] Verify the same behavior on a declared physical Android TV/Google TV and record device, OS, GLES renderer, output mode, full decode/visual evidence and SHA-256 for any APK.
+- [ ] Add user-selectable/local video input and compare channel-like decoded content, bilinear, EASU, and EASU+RCAS against versioned reference captures.
+- [ ] Add consent-based MediaProjection capture only as a separate preview path with session-revocation handling; explicitly test protected-content and self-capture behavior without bypassing either.
+
+This demo is not a system-wide enhancement layer. It does not capture or replace other applications, and it has no background service. The Android milestone is incomplete until build, remote-input, frame-output and target-device checks above are performed.
+
+## M7 — Rust-assisted Android rendering engine (in progress)
+
+- [x] Add `nightknight-render-core` as a reusable Rust library with deterministic EASU stage planning, overflow-safe dimensions, and unit coverage. Kotlin retains its reference implementation.
+- [x] Add a narrow JNI stage-planning boundary with lazy load, schedule validation, safe Kotlin fallback, planner CPU/JNI timing diagnostics, and a host-JVM JNI smoke.
+- [x] Keep requested preset state separate from GL-thread-owned active mode; coalesce rapid UI requests and rebuild plans/resources before the next draw. A surface callback that adopts the request first resets stale runtime fallback state before planning.
+- [x] Skip EASU re-planning for unchanged geometry/configuration requests, reuse the chosen stages for memory and ping-pong sizing, and assert exact call counts on a single emulator log record; scope the native-4K C probe to its cleared Logcat, match its plan to the verified effective surface, require Strategy A with `linear_final=false` on the 1080p fallback, and snapshot initial JNI/surface evidence before diagnostics clears Logcat.
+- [x] Pin Rust/Cargo `1.99.0` and Android NDK `27.2.12479018` in local/CI workflows and Gradle task inputs; build script retries `ANDROID_NDK_ROOT` if `ANDROID_NDK_HOME` is invalid and uses the NDK r27 macOS ARM host tag.
+- [ ] Verify Gradle/NDK builds and APK packaging for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`; validate the x86 library on the CI Android TV emulator.
+- [ ] Benchmark native-vs-Kotlin planning and maintain the existing renderer baseline. This policy migration is not expected to improve GPU shader execution; do not claim a speedup without evidence.
+- [ ] Keep Kotlin as the GLES/frame-rendering fallback. Move GL resources, shader/program management, or FSR stage execution only after same-device correctness/resource-lifecycle tests and measurable performance evidence justify it.
+- [ ] Preserve the 30 fps sustainable playback target, unchanged FSR 1.0 equations, SAR/DAR/rotation/color behavior, and the disabled direct-OES EASU route until a corrected comparison passes.
+- [ ] Keep physical Android TV testing blocked until fresh explicit owner authorization; no native-4K PowerVR support claim before authorized validation.
+
+M7 is not complete until the Android NDK build, APK ABI verification, emulator JNI parity/live-path smoke, fallback tests, and three review passes pass. Native 4K/PowerVR and GPU performance remain explicitly unverified.

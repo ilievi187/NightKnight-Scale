@@ -1,12 +1,23 @@
 # NightKnight Scale (NKScale)
 
-Linux-first GPU scaling control application. The first usable path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
+Open-source picture-scaling experiments, with Android TV now the priority and the existing Linux Gamescope prototype preserved as a separate supported path. The Linux path delegates game composition and FSR 1.0 to the installed Gamescope compositor; NKScale does not claim that this backend is a native NKScale renderer.
 
 ## Current state
 
-This is an early working prototype. The Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O, and deterministic test pattern are implemented. The Mode A 1280×720→1920×1080 FSR comparison has been visually captured on an isolated headless output and pixel-compared with the linear path; exact shader dispatch and performance telemetry remain unverified. PR #2 carries the validation work; check its live CI and human-review state before merging. Issue #1 remains open because actual high-resolution target-buffer dimensions are not verified. Native Vulkan processing and portal-authorized capture are later milestones.
+This remains an early prototype. The Android TV app in `android/` now provides four named GLES profiles (OFF, QUALITY, BALANCED, PERFORMANCE), persistent preset/sharpness settings, local video selection with SAF/Photo Picker fallback, aspect-fit output, multi-pass EASU to the texture-limited target, RCAS, and a remote-accessible diagnostics dialog. Automated emulator coverage exercises all profiles, preference restore, local 25/30/50/60 fps SDR clips, 576p/portrait shapes and decoded-frame motion. Emulator results are not physical TCL 55C645 evidence and pixel differences do not establish perceptual improvement. The app remains a foreground own-player preview; it cannot intercept EON, other apps, or HDMI. The existing Linux Rust GUI, Vulkan adapter probe, SDL display enumeration, Gamescope launcher, profile I/O and deterministic test pattern are preserved; the Linux path remains a Gamescope delegation, not a claimed native NKScale renderer.
 
-Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). Do not interpret the aspirational roadmap as shipped functionality.
+Implemented scope and validation results are tracked in [the roadmap](docs/roadmap.md) and [validation ledger](docs/validation.md). The [acceptance traceability matrix](docs/agent/luna-tv/acceptance-matrix.md) maps each prototype requirement to its concrete check or recorded gap. Do not interpret aspirational roadmap items as shipped functionality.
+
+## Android TV prototype
+
+The app supports bundled test clips and user-selected local video through the TV document picker, with a Photo Picker fallback when Android TV resolves `ACTION_OPEN_DOCUMENT` to a stub. MediaPlayer feeds `SurfaceTexture`/OES; the GL thread copies frames to RGBA and applies the selected bilinear/EASU/RCAS pipeline. OFF maps to bilinear, QUALITY to NR+EASU+RCAS, BALANCED to EASU+RCAS and PERFORMANCE to EASU-only. EASU uses multi-pass stages capped at 2× per axis toward a display-fit target limited by GLES texture edge and a 128 MiB estimated RGBA8 render-target budget. Preset and sharpness persist across process restart. Diagnostics expose input/output sizes, GL renderer/version, cadence, frame intervals, callback coalescing estimates, decoder lag events and CPU/GPU synchronization proxies. The RGBA estimate excludes decoder/driver/compositor allocations. Diagnostics do not expose exact hardware decoder/display dropped-frame counts. Rotation metadata, pixel-aspect ratio, color accuracy and sustained TCL performance still need physical-device validation. This remains an app-owned preview, not a system-wide enhancement layer.
+
+```sh
+cd android
+gradle testDebugUnitTest assembleDebug
+```
+
+The Android build is pinned to Android Gradle Plugin 8.13.2, Kotlin 2.3.0, Gradle 8.13, JDK 17 and compile SDK 36. Mission 5 code commit `ead8c77` passed PR #3 [Actions run `41237543233`](https://github.com/ilievi187/NightKnight-Scale/actions/runs/41237543233): Linux format/lint/tests, Android JVM tests/debug APK, and Android TV GLES/remote/local-file emulator smoke. The Actions APK artifact `nightknight-scale-tv-debug-apk` (artifact ID `13055664172`) was downloaded, identified as an Android package, and passed ZIP integrity; SHA-256 `c6e6a60e88745532ce1fcd5d7a4b67196dc4846c550115fb5cac705495ff1398`. The emulator evidence artifact is `nkscale-tv-emulator-smoke` (ID `13056084241`); both artifacts have seven-day retention. This is software-rendered API 36 AVD evidence, not physical TCL 55C645 or target-GPU validation. See [`android/README.md`](android/README.md), the [compatibility note](docs/android-tv-compatibility.md), and [acceptance matrix](docs/agent/luna-tv/acceptance-matrix.md) for limits.
 
 ## Mode A: launch an app through Gamescope
 

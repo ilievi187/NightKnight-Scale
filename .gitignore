@@ -6,3 +6,7 @@ dist/
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Android/Gradle build outputs
+android/.gradle/
+android/**/build/
